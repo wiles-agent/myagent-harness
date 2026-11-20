@@ -24,7 +24,7 @@ public final class PlanMode {
 
     /**
      * plan 模式下还能用的工具。只放<b>只看不改</b>的：读、搜、联网读、读记忆、读技能、找工具，
-     * 外加派子 agent 那几个（{@code SubAgents} 自己会把类型限制在 explorer）。
+     * 外加派子 agent 那几个（子 agent 跟着主对话的模式走，派出去也只拿得到这张表里的工具，见 {@code SubAgents#childMayUse}）。
      *
      * <p>bash 不在里面：它能做的事没法从名字上判断，{@code git log} 和 {@code rm} 走的是同一扇门。
      * MCP 工具也不在：它叫 query 也可能在写库。这和只读模式（{@code --readonly}）是同一个判断。

@@ -86,7 +86,8 @@ public record Skill(String id, String title, String description, String body,
                 Map.copyOf(parsed.front));
     }
 
-    private record Parsed(Map<String, String> front, String body) {
+    /** 拆出来的头（键已转小写）和正文。agent 定义（{@code agents/*.md}）用的是同一种格式，共用这个解析器。 */
+    public record Parsed(Map<String, String> front, String body) {
     }
 
     /**
@@ -97,7 +98,7 @@ public record Skill(String id, String title, String description, String body,
      * （描述里「当用户说：xxx」很常见），所以只按<b>第一个</b>冒号切。
      * 换行续写的值按 YAML 的折叠语义用空格接起来——描述通常很长，多半会换行。
      */
-    private static Parsed split(String text) {
+    public static Parsed split(String text) {
         Map<String, String> front = new LinkedHashMap<>();
         String[] lines = text.split("\\R", -1);
         int i = 0;

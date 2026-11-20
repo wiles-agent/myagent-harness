@@ -71,4 +71,22 @@ public final class SystemPrompt {
                 .readOnly(readOnly)
                 .build());
     }
+
+    /**
+     * 按类型派出去的子 agent 的系统提示词：base（身份、语言、工作区、工作方式）+ 子 agent 模式 + 这种类型的规矩。
+     *
+     * <p>照 Claude Code：不拼主 agent 那一份，也不带长期记忆索引（子 agent 不继承记忆）。
+     * 里面<b>没有</b>子 agent 的编号——同一类型的子 agent 系统提示词逐字相同，彼此之间前缀缓存还能命中。
+     *
+     * @param readOnly 整个会话是只读启动的（{@code --readonly}），和主 agent 一样要明说
+     */
+    public static String forSubagent(Path workspaceRoot, AgentDefinition type, boolean readOnly) {
+        String rules = type.rules().isBlank() ? "" : "\n## 「" + type.name() + "」的规矩\n\n" + type.rules() + "\n";
+        return ASSEMBLER.assemble(PromptMode.SUBAGENT, PromptContext.builder()
+                .variable("workspace", String.valueOf(workspaceRoot))
+                .variable("agentType", type.name())
+                .variable("agentRules", rules)
+                .readOnly(readOnly)
+                .build());
+    }
 }

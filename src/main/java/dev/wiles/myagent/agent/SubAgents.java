@@ -39,6 +39,8 @@ import java.util.function.Supplier;
  *   <li><b>异步</b>：{@code spawn_agent} 立刻返回 id，子 agent 在后台线程上跑，主 agent 接着干自己的。
  *       做完时结果作为 {@code <subagent_notification>} 注入主 agent 的对话（见 {@link Mailbox}），
  *       不用主 agent 去问；真要卡在它的结果上才用 {@code wait_agent}。</li>
+ *   <li><b>类型是数据</b>（照 Claude Code 的 subagent 定义）：内置 default / explorer / worker 三份，
+ *       用户在 {@code agents/*.md} 里加的同等对待，工具按 tools / disallowedTools 收窄（见 {@link AgentDefinition}）。</li>
  *   <li><b>会写</b>：{@code worker} 直接改工作区——和主 agent、和别的 worker 共用一个目录。
  *       Codex 只靠提示词让各方守住<b>写入集合</b>；这里多做一步，由框架锁住（见 {@link OwnedWrite}）：
  *       派 worker 必须写明 {@code owns}，它跑着的时候别人写不了这些路径，它也只能写这些路径。
@@ -47,19 +49,24 @@ import java.util.function.Supplier;
  *   <li><b>能复用</b>：{@code send_input} 给已有的子 agent 追加话（排队或打断），它的上下文还在；
  *       {@code close_agent} 关掉释放名额，{@code resume_agent} 再打开。</li>
  *   <li><b>上限</b>：同时开着的最多 {@link Settings#maxThreads()} 个（做完没关的也算，默认
- *       {@link #DEFAULT_MAX_THREADS}），深度 1——子 agent 的菜单上没有这五个工具
+ *       {@link #DEFAULT_MAX_THREADS}），深度 1——子 agent 的菜单上没有这五个工具（{@link #NEVER_FOR_CHILDREN}）
  *       （Codex 是 {@code agent_max_threads = 6}、{@code agent_max_depth = 1}；并发先压到 3，
  *       cookiecutter 上几个 agent 同时请求就撞 429，再按实验调）。</li>
  *   <li><b>派不派由模型按描述自己定</b>（照 Claude Code 的 Agent 工具）：工具常驻菜单，
  *       {@code spawn_agent} 的说明里写清每种类型什么时候用、什么时候自己做更快。
  *       不在开工前另跑一次决策，也不靠用户开口许可。</li>
- *   <li><b>plan 模式下只能派 explorer</b>：那时主 agent 只许调研，派个 worker 出去改文件
- *       等于从侧门绕过了这条规矩（见 {@link #readOnlyWhen}）。</li>
+ *   <li><b>跟着主对话的权限模式走</b>（照 Claude Code）：主对话在 plan 模式时，
+ *       所有子 agent 每一步都只剩只读的工具，不管类型、不管是不是早就派出去了（见 {@link #readOnlyWhen}）。</li>
  * </ul>
  *
- * <h3>子 agent 的系统提示词就是主 agent 那一份</h3>
- * 身份和规矩放在它第一条消息的 {@code <subagent_task>} 里，而不是另起一份系统提示词：
- * 系统提示词和主 agent 逐字相同，前缀缓存就命中；{@code fork_context} 时整段主对话也命中。
+ * <h3>两种派法（照 Claude Code）</h3>
+ * <ul>
+ *   <li><b>按类型派</b>：子 agent 用<b>自己的</b>系统提示词（{@link SystemPrompt#forSubagent}：base + 子 agent 模式 + 类型的规矩），
+ *       工具按定义筛，从零开始，只看得到派活时写的那段话。主 agent 那一份里进出 plan 模式、怎么派子 agent 的话它用不上。
+ *       同一类型的系统提示词逐字相同，彼此之间前缀缓存照样命中。</li>
+ *   <li><b>fork</b>：系统提示词、工具菜单、对话历史都和主对话一模一样，前缀缓存整段命中，所以最便宜。
+ *       派遣和进出 plan 模式的工具<b>留在菜单上</b>（换成会拒绝的那一版）——拿掉的话工具定义就和主对话不一样了，缓存全丢。</li>
+ * </ul>
  */
 public final class SubAgents implements Mailbox {
 
@@ -77,7 +84,7 @@ public final class SubAgents implements Mailbox {
      * 可调的几个旋钮，都来自环境变量（见 {@link #fromEnv}）。
      *
      * @param maxThreads         同时开着的子 agent 上限
-     * @param roles              允许派的类型（default / explorer / worker 的子集）
+     * @param roles              只允许派这几种类型；空表示能派的都能派（内置的和 {@code agents/*.md} 里的）
      * @param childMaxSteps      子 agent 每一轮的步数上限，{@code <= 0} 不限
      * @param childTimeoutMillis 子 agent 每一轮的墙钟时限，{@code <= 0} 不限
      * @param budget             和主 agent 共用的步数预算，null 表示不共用
@@ -90,13 +97,15 @@ public final class SubAgents implements Mailbox {
                 throw new IllegalArgumentException("子 agent 并发上限要大于 0: " + maxThreads);
             }
             roles = Set.copyOf(roles);
-            if (roles.isEmpty() || !Set.of("default", "explorer", "worker").containsAll(roles)) {
-                throw new IllegalArgumentException("子 agent 类型只认 default / explorer / worker: " + roles);
+            for (String role : roles) {
+                if (!AgentDefinition.NAME.matcher(role).matches()) {
+                    throw new IllegalArgumentException("子 agent 类型名只能用小写字母、数字、- 和 _: " + role);
+                }
             }
         }
 
         public static Settings defaults(int childMaxSteps) {
-            return new Settings(DEFAULT_MAX_THREADS, Set.of("default", "explorer", "worker"), childMaxSteps,
+            return new Settings(DEFAULT_MAX_THREADS, Set.of(), childMaxSteps,
                     DEFAULT_CHILD_TIMEOUT_MILLIS, null);
         }
 
@@ -110,7 +119,7 @@ public final class SubAgents implements Mailbox {
             String roles = env.apply("MYAGENT_SUBAGENT_ROLES");
             return new Settings(
                     intOr(env.apply("MYAGENT_SUBAGENT_MAX"), DEFAULT_MAX_THREADS),
-                    roles == null || roles.isBlank() ? Set.of("default", "explorer", "worker")
+                    roles == null || roles.isBlank() ? Set.of()
                             : Set.of(roles.toLowerCase(Locale.ROOT).replace(" ", "").split(",")),
                     intOr(env.apply("MYAGENT_SUBAGENT_STEPS"), defaultChildSteps),
                     intOr(env.apply("MYAGENT_SUBAGENT_TIMEOUT"), (int) (DEFAULT_CHILD_TIMEOUT_MILLIS / 1000)) * 1000L,
@@ -157,10 +166,6 @@ public final class SubAgents implements Mailbox {
     static final long MIN_WAIT_MILLIS = 10_000;
     static final long MAX_WAIT_MILLIS = 3_600_000;
 
-    /** 这五个工具。子 agent 的菜单上一个都没有——深度 1。 */
-    public static final Set<String> TOOL_NAMES =
-            Set.of("spawn_agent", "send_input", "wait_agent", "close_agent", "resume_agent");
-
     /** 写入方是主 agent 时的名字。 */
     static final String MAIN = "主 agent";
 
@@ -202,33 +207,11 @@ public final class SubAgents implements Mailbox {
         }
     }
 
-    /** 一种子 agent。{@code excluded} 是从主 agent 菜单里拿掉的工具。 */
-    record Role(String id, String description, String rulesPath, Set<String> excluded) {
-    }
-
-    static final Role DEFAULT = new Role("default",
-            "默认 agent，和你有同样的工具（派子 agent 的除外）。", "subagents/roles/default.md", Set.of());
-    static final Role EXPLORER = new Role("explorer", """
-            用来问代码库里具体的问题。explorer 又快又可信，问题要具体、范围要窄。
-              - 别让自己去查 explorer 已经查过的东西；一般直接采信它的结论，不用再核实（需要上下文时自己读代码也可以）。
-              - 有几个能各自独立回答的问题时，同时派几个 explorer。等结果的时候接着做不依赖这些结果的活——并行是委派最大的好处。
-              - 相关的追问用 send_input 交给已有的 explorer，不要新派。
-              它没有写文件的工具。""",
-            "subagents/roles/explorer.md", Set.of("write_file", "edit_file", "create_project", "remember"));
-    static final Role WORKER = new Role("worker", """
-            用来干活：实现功能的一部分、修测试或 bug、把大重构拆成独立的几块。
-              - 用 owns 明确交代它**负责哪些文件/模块**（所有权，必填），比如「worker 1 负责鉴权模块，worker 2 负责数据库层」。它跑着的时候这些路径只有它能写，你也写不了。
-              - 告诉它**不是一个人在改这个代码库**：别人改的不要回退，要调整自己的实现去适配。""",
-            "subagents/roles/worker.md", Set.of());
-    static final Map<String, Role> ROLES = Map.of(
-            DEFAULT.id(), DEFAULT, EXPLORER.id(), EXPLORER, WORKER.id(), WORKER);
-
     static {
-        // 提示词文件缺了不会有任何症状，只是子 agent 少了规矩。启动就读一遍
-        for (String path : List.of("subagents/spawn.md", "subagents/child.md")) {
+        // 提示词文件缺了不会有任何症状，只是子 agent 少了规矩。启动就读一遍（内置类型的规矩在 AgentDefinitions 里读）
+        for (String path : List.of("subagents/spawn.md", "subagents/fork.md", "modes/subagent.md")) {
             REPO.loadRequired(path);
         }
-        ROLES.values().forEach(role -> REPO.loadRequired(role.rulesPath()));
     }
 
     /** 进程内全局递增：计划里的子任务也在发带号的事件，各数各的会撞号。 */
@@ -240,7 +223,7 @@ public final class SubAgents implements Mailbox {
     /** 一个子 agent。字段都在 {@link #lock} 下读写。 */
     private final class Child {
         final String id;
-        final Role role;
+        final AgentDefinition role;
         final Agent agent;
         State state = State.RUNNING;
         /** 关掉之前的状态，resume 时还原。 */
@@ -273,7 +256,7 @@ public final class SubAgents implements Mailbox {
         /** 开跑但还没结束的工具调用：结束事件里只有 id，命令要从开始事件里拿。 */
         final Map<Integer, AgentEvent.ToolStarted> inFlight = new ConcurrentHashMap<>();
 
-        Child(String id, Role role, Agent agent, List<Path> owns) {
+        Child(String id, AgentDefinition role, Agent agent, List<Path> owns) {
             this.id = id;
             this.role = role;
             this.agent = agent;
@@ -310,8 +293,12 @@ public final class SubAgents implements Mailbox {
     private final Settings settings;
     private final BiConsumer<String, AgentEvent> events;
     private volatile Agent parent;
-    /** 主 agent 眼下是不是只许调研（plan 模式）。是的话只放 explorer 出去。 */
+    /** 主对话眼下是不是 plan 模式。是的话子 agent 都只剩只读的工具，见 {@link #childMayUse}。 */
     private volatile BooleanSupplier readOnly = () -> false;
+    /** 会话是只读启动的（{@code --readonly}）：按类型派的子 agent 的系统提示词里也要明说。 */
+    private volatile boolean readOnlyPolicy;
+    /** 能派哪些类型。默认只有内置的，{@link #withDefinitions} 换成带自定义的。 */
+    private volatile AgentDefinitions definitions = AgentDefinitions.builtins();
 
     /**
      * @param clients       <b>每个子 agent 现造一个</b>客户端：{@code DeepSeekClient} 带可变状态，共用会互相踩取消
@@ -336,10 +323,59 @@ public final class SubAgents implements Mailbox {
     }
 
     /**
-     * 什么时候只许派只读的 explorer。plan 模式由界面随时切换，所以给的是一个现查的开关。
+     * 主对话眼下是不是 plan 模式。plan 模式由界面随时切换，所以给的是一个现查的开关。
+     *
+     * <p>照 Claude Code：子 agent <b>跟着主对话的权限模式走</b>，而不是按类型挡——plan 模式下不管派的是什么类型、
+     * 是不是早就派出去在跑，每一步的菜单都只剩只读的工具（{@link #childMayUse}）。
+     * 原来的做法是「plan 模式只许派 explorer」，可 explorer 手上有 bash，照样能写文件；
+     * 而一个 plan 模式之前派出去的 worker，切进 plan 模式之后还在接着改。
      */
     public SubAgents readOnlyWhen(BooleanSupplier readOnly) {
         this.readOnly = readOnly;
+        return this;
+    }
+
+    /** 会话是只读启动的：子 agent 的系统提示词跟主 agent 一样带上只读那段。 */
+    public SubAgents withReadOnlyPolicy(boolean readOnly) {
+        this.readOnlyPolicy = readOnly;
+        return this;
+    }
+
+    /**
+     * fork 这一步的菜单：和主 agent 用同一条规矩（{@link PlanMode#allows} 的语义），菜单才逐字一样、缓存才命中。
+     * 派遣、进出 plan 模式那几个在菜单上，但调了会被拒绝（见 {@link #forkTools}）。
+     */
+    boolean forkMayUse(String tool) {
+        return readOnly.getAsBoolean() ? PlanMode.READ_ONLY_TOOLS.contains(tool) : !PlanMode.EXIT_TOOL.equals(tool);
+    }
+
+    /** 子 agent 这一步能不能用这个工具：主对话在 plan 模式时，只放只读的。 */
+    boolean childMayUse(String tool) {
+        return !readOnly.getAsBoolean() || PlanMode.READ_ONLY_TOOLS.contains(tool);
+    }
+
+    /**
+     * 换一套可派的类型（内置的加上 {@code agents/*.md} 里的，见 {@link AgentDefinitions#load}）。
+     * 白名单里对不上任何工具的条目这里就说出来：写错一个名字的症状是「它就是不用那个工具」，
+     * 和那个工具不存在长得一模一样。
+     */
+    public SubAgents withDefinitions(AgentDefinitions definitions) {
+        this.definitions = definitions;
+        List<String> available = inheritable();
+        for (AgentDefinition d : definitions.all()) {
+            List<String> unmatched = d.unmatched(available);
+            if (!unmatched.isEmpty()) {
+                log.warn("agent 类型 {}（{}）的 tools 里这些对不上任何工具: {}", d.name(), d.source(), unmatched);
+            }
+            if (d.resolve(available).isEmpty()) {
+                log.warn("agent 类型 {}（{}）算下来一个工具都没有", d.name(), d.source());
+            }
+        }
+        for (String name : settings.roles()) {
+            if (definitions.get(name) == null) {
+                log.warn("MYAGENT_SUBAGENT_ROLES 里的 {} 不是已知的 agent 类型，忽略", name);
+            }
+        }
         return this;
     }
 
@@ -385,7 +421,10 @@ public final class SubAgents implements Mailbox {
         synchronized (lock) {
             ObjectNode out = JSON.createObjectNode();
             out.put("spawned", spawned.get());
-            out.set("settings", settings.toJson());
+            ObjectNode shown = settings.toJson();
+            var shownRoles = shown.putArray("roles");                // 换成实际能派的，而不是「空 = 全部」
+            allowed().forEach(d -> shownRoles.add(d.name()));
+            out.set("settings", shown);
             if (settings.budget() != null) {
                 out.put("totalStepsUsed", settings.budget().used());
             }
@@ -398,7 +437,7 @@ public final class SubAgents implements Mailbox {
             for (Child c : children.values()) {
                 ObjectNode n = list.addObject();
                 n.put("id", c.id);
-                n.put("type", c.role.id());
+                n.put("type", c.role.name());
                 n.put("state", c.state.name().toLowerCase(Locale.ROOT));
                 n.put("steps", c.steps);
                 c.owns.forEach(o -> n.withArray("owns").add(show(o)));
@@ -642,7 +681,7 @@ public final class SubAgents implements Mailbox {
     private static String notice(Child child) {
         ObjectNode body = JSON.createObjectNode();
         body.put("agent_id", child.id);
-        body.put("agent_type", child.role.id());
+        body.put("agent_type", child.role.name());
         body.set("status", status(child));
         body.set("observed", observed(child));
         return NOTICE_TAG + "\n" + body.toPrettyString() + "\n</subagent_notification>";
@@ -765,13 +804,27 @@ public final class SubAgents implements Mailbox {
     // ---------------------------------------------------------------- 子 agent 的构造
 
     /**
-     * 按角色从全量注册表里筛：拿掉这五个工具（深度 1），再拿掉角色不许用的。
+     * 子 agent 一律拿不到的：派子 agent 的五个（深度 1），和进出 plan 模式的两个——
+     * plan 模式是主对话的事，子 agent 只跟着它（照 Claude Code：EnterPlanMode / ExitPlanMode 不给子 agent）。
+     */
+    static final Set<String> NEVER_FOR_CHILDREN = Set.of(
+            "spawn_agent", "send_input", "wait_agent", "close_agent", "resume_agent",
+            PlanMode.ENTER_TOOL, PlanMode.EXIT_TOOL);
+
+    /** 主 agent 给得出、子 agent 有可能拿到的工具名，按注册顺序。 */
+    private List<String> inheritable() {
+        return allTools.all().stream().map(Tool::name).filter(n -> !NEVER_FOR_CHILDREN.contains(n)).toList();
+    }
+
+    /**
+     * 按定义从全量注册表里筛（见 {@link AgentDefinition#resolve}）。
      * 写文件的工具换成以这个子 agent 为写入方的那一版。
      */
-    private ToolRegistry toolsFor(Role role, String id) {
+    private ToolRegistry toolsFor(AgentDefinition role, String id) {
+        Set<String> menu = role.resolve(inheritable());
         ToolRegistry narrowed = new ToolRegistry();
         for (Tool tool : allTools.all()) {
-            if (TOOL_NAMES.contains(tool.name()) || role.excluded().contains(tool.name())) {
+            if (!menu.contains(tool.name())) {
                 continue;
             }
             narrowed.register(tool instanceof OwnedWrite w ? new OwnedWrite(w.inner, id)
@@ -783,6 +836,48 @@ public final class SubAgents implements Mailbox {
             narrowed.replace(new ToolSearchTool(narrowed));
         }
         return narrowed;
+    }
+
+    /**
+     * fork 的工具：主 agent 的整张表，顺序、名字、说明、参数一字不差。写文件的换成以它为写入方的那一版；
+     * {@link #NEVER_FOR_CHILDREN} 里的换成同一副外表、调了就拒绝的那一版（fork 不能再派，plan 模式归主对话管）。
+     */
+    private ToolRegistry forkTools(String id) {
+        ToolRegistry same = new ToolRegistry();
+        for (Tool tool : allTools.all()) {
+            same.register(NEVER_FOR_CHILDREN.contains(tool.name()) ? new Refused(tool)
+                    : tool instanceof OwnedWrite w ? new OwnedWrite(w.inner, id)
+                    : tool instanceof MainTestWatch m ? m.inner : tool);
+        }
+        same.defer(allTools.deferredTools().stream().map(Tool::name).toList());
+        if (same.get(ToolSearchTool.NAME) != null) {
+            same.replace(new ToolSearchTool(same));
+        }
+        return same;
+    }
+
+    /** 外表和原工具一样、调了就拒绝。 */
+    private record Refused(Tool inner) implements Tool {
+        @Override
+        public String name() {
+            return inner.name();
+        }
+
+        @Override
+        public String description() {
+            return inner.description();
+        }
+
+        @Override
+        public String parametersSchema() {
+            return inner.parametersSchema();
+        }
+
+        @Override
+        public ToolResult execute(JsonNode args) {
+            return ToolResult.error(inner.name() + " 不能用：你是 fork 出来的分身，不能再派子 agent，也不能进出 plan 模式。"
+                    + "需要的话写进最后的答复，交给主 agent");
+        }
     }
 
     /** 相对工作区的路径解析成绝对、规范化的。 */
@@ -842,7 +937,7 @@ public final class SubAgents implements Mailbox {
     }
 
     /**
-     * fork_context：主 agent 的对话截到发起这次派遣的那条 assistant 之前。
+     * fork：主 agent 的对话截到发起这次派遣的那条 assistant 之前。
      * 那条消息里的 tool_calls 此刻还没有结果，带过去就是一条无主的调用，请求直接 400。
      */
     private static List<ChatMessage> forked(List<ChatMessage> conversation) {
@@ -857,21 +952,31 @@ public final class SubAgents implements Mailbox {
         return conversation.subList(0, cut);
     }
 
-    String brief(String id, Role role, String message) {
-        return REPO.loadRequired("subagents/child.md")
+    /** fork 收到的第一条：交代它是分身、只做这一件事，再接上任务。别的类型的规矩在它们自己的系统提示词里。 */
+    String forkBrief(String id, String message) {
+        return REPO.loadRequired("subagents/fork.md")
                 .replace("{{id}}", id)
-                .replace("{{role}}", role.id())
-                .replace("{{roleRules}}", REPO.loadRequired(role.rulesPath()).strip())
                 .replace("{{message}}", message);
+    }
+
+    /** 这次能派的类型：定义里有的，再按 {@link Settings#roles()} 收窄（空表示不收窄）。 */
+    List<AgentDefinition> allowed() {
+        return definitions.all().stream()
+                .filter(d -> settings.roles().isEmpty() || settings.roles().contains(d.name())).toList();
     }
 
     String spawnDescription() {
         StringBuilder roles = new StringBuilder();
-        for (Role role : List.of(DEFAULT, EXPLORER, WORKER)) {
-            if (!settings.roles().contains(role.id())) {
-                continue;
+        for (AgentDefinition role : allowed()) {
+            roles.append("- ").append(role.name()).append("：").append(role.description());
+            if (role.tools() != null) {
+                // 白名单收窄过的，把菜单亮出来：派之前就知道它干不干得了
+                roles.append("（工具：").append(String.join(", ", role.resolve(inheritable()))).append('）');
             }
-            roles.append("- ").append(role.id()).append("：").append(role.description().strip()).append('\n');
+            if (role.ownsRequired() && role != AgentDefinitions.WORKER) {
+                roles.append("（派它必须写 owns）");
+            }
+            roles.append('\n');
         }
         return REPO.loadRequired("subagents/spawn.md")
                 .replace("{{roles}}", roles.toString().strip())
@@ -893,35 +998,35 @@ public final class SubAgents implements Mailbox {
 
         @Override
         public String parametersSchema() {
+            String types = String.join(", ", allowed().stream().map(d -> "\"" + d.name() + "\"").toList());
             return """
                     {
                       "type": "object",
                       "properties": {
                         "message": {"type": "string", "description": "交给新 agent 的任务。它默认看不到你的对话，要把它需要知道的都写进来"},
-                        "agent_type": {"type": "string", "enum": ["default", "explorer", "worker"], "description": "不传就是 default"},
-                        "fork_context": {"type": "boolean", "description": "true 把你到目前为止的对话复制给它；不传或 false 时它只看到 message"},
+                        "agent_type": {"type": "string", "enum": [%s], "description": "不传就是 default"},
                         "owns": {"type": "array", "items": {"type": "string"}, "description": "它负责（独占写）的文件或目录，相对工作区。worker 必填。它跑着的时候你和别的 agent 写不了这些路径，它也只能写这些路径；它交回结果后放开"}
                       },
                       "required": ["message"]
                     }
-                    """;
+                    """.formatted(types);
         }
 
         @Override
         public ToolResult execute(JsonNode args) {
             String message = Args.requireString(args, "message").strip();
             String type = args.path("agent_type").asText("default").strip().toLowerCase(Locale.ROOT);
-            Role role = ROLES.get(type.isEmpty() ? "default" : type);
+            AgentDefinition role = definitions.get(type.isEmpty() ? "default" : type);
             if (role == null) {
-                return ToolResult.error("agent_type 只认 default / explorer / worker，收到: " + type);
+                return ToolResult.error("agent_type 只认 "
+                        + String.join(" / ", definitions.all().stream().map(AgentDefinition::name).toList())
+                        + "，收到: " + type);
             }
-            if (role != EXPLORER && readOnly.getAsBoolean()) {
-                return ToolResult.error("现在是 plan 模式，只许调研：只能派 explorer。"
-                        + "要动手的部分写进计划，用户批准、退出 plan 模式之后再派");
-            }
-            if (!settings.roles().contains(role.id())) {
-                return ToolResult.error("这次只允许派 " + String.join(" / ", settings.roles().stream().sorted().toList())
-                        + "，不能派 " + role.id() + "。这部分你自己做。");
+            // plan 模式不在这儿挡：子 agent 跟着主对话的权限模式走（见 toolGate），派出去也只拿得到只读的工具
+            if (!allowed().contains(role)) {
+                return ToolResult.error("这次只允许派 "
+                        + String.join(" / ", allowed().stream().map(AgentDefinition::name).toList())
+                        + "，不能派 " + role.name() + "。这部分你自己做。");
             }
             Agent parentAgent = parent;
             if (parentAgent == null) {
@@ -929,8 +1034,8 @@ public final class SubAgents implements Mailbox {
             }
             List<Path> owns = Args.optStringList(args, "owns").stream()
                     .filter(o -> !o.isBlank()).map(SubAgents.this::resolve).distinct().toList();
-            if (role == WORKER && owns.isEmpty()) {
-                return ToolResult.error("派 worker 要用 owns 写明它负责哪些文件或目录——"
+            if (role.ownsRequired() && owns.isEmpty()) {
+                return ToolResult.error("派 " + role.name() + " 要用 owns 写明它负责哪些文件或目录——"
                         + "它跑着的时候只有它能写这些路径，别人（包括你）写不了，这样才不会互相覆盖");
             }
             for (Path o : owns) {
@@ -960,11 +1065,16 @@ public final class SubAgents implements Mailbox {
                 }
             }
             String id = "agent-" + SEQ.incrementAndGet();
-            Agent agent = new Agent(clients.get(), toolsFor(role, id), parentAgent.systemPrompt(),
+            boolean fork = role == AgentDefinitions.FORK;
+            // fork：系统提示词、工具、历史都和主对话一样，前缀缓存整段命中；
+            // 别的类型：自己的系统提示词、筛过的工具、从零开始（照 Claude Code）
+            Agent agent = new Agent(clients.get(), fork ? forkTools(id) : toolsFor(role, id),
+                    fork ? parentAgent.systemPrompt() : SystemPrompt.forSubagent(root, role, readOnlyPolicy),
                     settings.childMaxSteps(), contexts.get())
                     .withWritingTools(BuiltinTools.WRITING_TOOLS)
-                    .withStepBudget(settings.budget());
-            if (args.path("fork_context").asBoolean(false)) {
+                    .withStepBudget(settings.budget())
+                    .withToolGate(fork ? SubAgents.this::forkMayUse : SubAgents.this::childMayUse);
+            if (fork) {
                 agent.restore(forked(parentAgent.conversation()));
             }
             Child child = new Child(id, role, agent, owns);
@@ -983,11 +1093,12 @@ public final class SubAgents implements Mailbox {
                     return ToolResult.error("已经开着 " + settings.maxThreads() + " 个子 agent 了，先 close_agent 关掉不需要的");
                 }
                 children.put(id, child);
-                startTurn(child, brief(id, role, owns.isEmpty() ? message
-                        : message + "\n\n你负责（只有你能写、你也只能写）：" + owned(child)));
+                String task = owns.isEmpty() ? message
+                        : message + "\n\n你负责（只有你能写、你也只能写）：" + owned(child);
+                startTurn(child, fork ? forkBrief(id, task) : task);
             }
             spawned.incrementAndGet();
-            log.info("派出 {}（{}）: {}", id, role.id(), message.length() > 80 ? message.substring(0, 80) + "…" : message);
+            log.info("派出 {}（{}）: {}", id, role.name(), message.length() > 80 ? message.substring(0, 80) + "…" : message);
             ObjectNode out = JSON.createObjectNode();
             out.put("agent_id", id);
             out.putNull("nickname");
@@ -1035,10 +1146,6 @@ public final class SubAgents implements Mailbox {
                 }
                 if (child.closed) {
                     return ToolResult.error(target + " 已经关掉了，先 resume_agent 再发");
-                }
-                if (child.role != EXPLORER && readOnly.getAsBoolean()) {
-                    return ToolResult.error("现在是 plan 模式，只许调研：" + target + " 是 " + child.role.id()
-                            + "，不能给它派活。退出 plan 模式之后再发");
                 }
                 if (!child.running) {
                     notices.removeIf(n -> n.agentId().equals(target));   // 上一轮的结果它已经不需要了

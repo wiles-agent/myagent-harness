@@ -285,7 +285,9 @@ public final class AgentServer extends WebSocketServer {
                         SUBAGENTS, this::onAgentEvent);
         if (subagents != null) {
             tools.registerAll(subagents.tools());
-            subagents.readOnlyWhen(planMode::on);
+            subagents.readOnlyWhen(planMode::on)
+                    .withDefinitions(dev.wiles.myagent.agent.AgentDefinitions.load(workspace.root()))
+                    .withReadOnlyPolicy(options.readOnly());
         }
         // plan 模式的两个工具。只读启动时不接：那时什么都改不了，没有「先规划再动手」这回事
         if (!options.readOnly()) {

@@ -214,17 +214,24 @@ class SubAgentsTest {
     }
 
     @Test
-    @DisplayName("子 agent：沿用主 agent 的系统提示词；任务包在 <subagent_task> 里；菜单没有派遣工具（深度 1）")
-    void childSharesSystemPromptAndHasNoSpawnTools() throws Exception {
+    @DisplayName("按类型派：用自己的系统提示词（不是主 agent 那一份）、类型规矩在里面、不带编号；任务就是第一条；菜单没有派遣工具")
+    void typedChildHasItsOwnSystemPrompt() throws Exception {
         Script child = new Script().reply("查完了");
-        Rig rig = new Rig(child);
+        Script second = new Script().reply("也查完了");
+        Rig rig = new Rig(child, second);
         rig.spawn(Map.of("message", "查 a", "agent_type", "explorer"));
+        rig.spawn(Map.of("message", "查 b", "agent_type", "explorer"));
         awaitIdle(rig.subagents);
 
         List<ChatMessage> sent = child.seen.get(0);
-        assertEquals("SYSTEM-PROMPT", sent.get(0).content(), "系统提示词逐字相同，前缀缓存才命中");
-        assertTrue(sent.get(1).content().contains("<subagent_task>"));
-        assertTrue(sent.get(1).content().contains("查 a"));
+        String system = sent.get(0).content();
+        assertNotEquals("SYSTEM-PROMPT", system);
+        assertTrue(system.contains("## 模式：子 agent"), system);
+        assertTrue(system.contains("类型「explorer」"));
+        assertTrue(system.contains("不改任何文件"), "explorer 的规矩在系统提示词里");
+        assertFalse(system.contains("agent-"), "编号不进系统提示词");
+        assertEquals(system, second.seen.get(0).get(0).content(), "同一类型的系统提示词逐字相同，彼此缓存能命中");
+        assertEquals("查 a", sent.get(1).content());
         List<String> menu = child.menus.get(0);
         assertEquals(List.of("read_file", "bash"), menu, "explorer 拿不到 write_file，谁都拿不到那五个工具");
     }
@@ -360,12 +367,12 @@ class SubAgentsTest {
     }
 
     @Test
-    @DisplayName("fork_context：子 agent 拿到主对话，截在发起派遣的那条 assistant 之前（不带无主的 tool_call）")
+    @DisplayName("fork：拿到主对话（截在发起派遣的那条 assistant 之前），系统提示词和菜单都和主 agent 一字不差，派遣工具在菜单上但调了被拒")
     void forkCopiesParentConversation() {
-        Script child = new Script().reply("看过前情了");
+        Script child = new Script().call("spawn_agent", "{\"message\":\"再分一个\"}").reply("看过前情了");
         Rig rig = new Rig(child);
         rig.parentLlm.call("read_file", "{}");
-        rig.parentLlm.call("spawn_agent", "{\"message\":\"接着查\",\"fork_context\":true}");
+        rig.parentLlm.call("spawn_agent", "{\"message\":\"接着查\",\"agent_type\":\"fork\"}");
         rig.parentLlm.call("wait_agent", m -> "{\"targets\":[\"" + lastAgentId(m) + "\"]}");
         rig.parentLlm.reply("完");
 
@@ -377,6 +384,13 @@ class SubAgentsTest {
         assertTrue(sent.stream().noneMatch(m -> m.hasToolCalls()
                         && m.toolCalls().stream().anyMatch(c -> c.name().equals("spawn_agent"))),
                 "发起派遣的那条 assistant 不能带过去");
+        assertEquals("SYSTEM-PROMPT", sent.get(0).content(), "fork 沿用主对话的系统提示词，前缀缓存整段命中");
+        assertTrue(sent.get(sent.size() - 1).content().contains("<fork_task>"));
+        assertEquals(rig.parentLlm.menus.get(0), child.menus.get(0), "菜单逐字一样，缓存才命中");
+        List<ChatMessage> after = child.seen.get(1);
+        String refused = after.get(after.size() - 1).content();
+        assertTrue(refused.contains("fork 出来的分身"), refused);
+        assertEquals(1, rig.subagents.report().path("spawned").asInt(), "fork 里那次派遣没有真派出去");
     }
 
     @Test
@@ -397,25 +411,76 @@ class SubAgentsTest {
     }
 
     @Test
-    @DisplayName("plan 模式下只能派 explorer：派 worker、给已有的 worker 发活都被挡回去；退出后照常")
-    void planModeOnlyAllowsExplorers() throws Exception {
+    @DisplayName("plan 模式：子 agent 跟着主对话的权限模式走——不管什么类型都只剩只读工具，连 explorer 的 bash 也收走")
+    void planModeIsInheritedByChildren() throws Exception {
         boolean[] plan = {true};
-        Rig rig = new Rig(SubAgents.Mode.ON, new Script().reply("查完了"), new Script().reply("写完了"));
+        Script explorer = new Script().call("bash", "{\"command\":\"echo x > a.py\"}").reply("查完了");
+        Script worker = new Script().reply("看完了");
+        Rig rig = new Rig(SubAgents.Mode.ON, explorer, worker);
         rig.subagents.readOnlyWhen(() -> plan[0]);
 
-        ToolResult worker = rig.exec("spawn_agent", Map.of("message", "改 a", "agent_type", "worker",
-                "owns", List.of("src/a.py")));
-        assertFalse(worker.ok());
-        assertTrue(worker.content().contains("plan 模式"), worker.content());
         rig.spawn(Map.of("message", "查 a", "agent_type", "explorer"));
-
-        plan[0] = false;
-        String id = rig.spawn(Map.of("message", "改 a", "agent_type", "worker", "owns", List.of("src/a.py")));
         awaitIdle(rig.subagents);
-        plan[0] = true;
-        ToolResult more = rig.exec("send_input", Map.of("target", id, "message", "再改一处"));
-        assertFalse(more.ok());
-        assertTrue(more.content().contains("plan 模式"), more.content());
+        assertEquals(List.of("read_file"), explorer.menus.get(0), "原来 explorer 在 plan 模式下还拿着 bash");
+        String refused = explorer.seen.get(1).get(explorer.seen.get(1).size() - 1).content();
+        assertTrue(refused.contains("plan 模式"), refused);           // 硬点也不执行
+        assertFalse(refused.contains("exit_plan_mode"), "子 agent 手上没有这个工具，别叫它去调");
+
+        rig.spawn(Map.of("message", "改 a", "agent_type", "worker", "owns", List.of("src/a.py")));
+        awaitIdle(rig.subagents);
+        assertEquals(List.of("read_file"), worker.menus.get(0));
+    }
+
+    @Test
+    @DisplayName("plan 模式之前派出去的，切进 plan 模式后下一步就只剩只读工具；子 agent 永远拿不到进出 plan 模式的工具")
+    void planModeAppliesToChildrenAlreadyRunning() throws Exception {
+        boolean[] plan = {false};
+        Script worker = new Script().call("read_file", m -> {
+            plan[0] = true;                                   // 它跑到一半，用户按了 Shift+Tab
+            return "{}";
+        }).reply("停手了");
+        Rig rig = new Rig(SubAgents.Mode.ON, worker);
+        rig.tools.register(stub(PlanMode.ENTER_TOOL)).register(stub(PlanMode.EXIT_TOOL));
+        rig.subagents.readOnlyWhen(() -> plan[0]);
+
+        rig.spawn(Map.of("message", "改 a", "agent_type", "worker", "owns", List.of("src/a.py")));
+        awaitIdle(rig.subagents);
+        assertEquals(List.of("read_file", "write_file", "bash"), worker.menus.get(0));
+        assertEquals(List.of("read_file"), worker.menus.get(1));
+    }
+
+    @Test
+    @DisplayName("自定义类型：tools 白名单收窄菜单、说明里亮出来；disallowedTools 先生效；要求 owns 的照样要")
+    void customDefinitionsShapeTheMenu() throws Exception {
+        Script reviewer = new Script().reply("审完了");
+        Script fixer = new Script().reply("修完了");
+        Rig rig = new Rig(SubAgents.Mode.ON, reviewer, fixer);
+        rig.subagents.withDefinitions(AgentDefinitions.of(List.of(
+                new AgentDefinition("reviewer", "只读审查", List.of("read_file", "bash"), List.of("bash"),
+                        "只看不改", false, "test"),
+                new AgentDefinition("fixer", "修一个文件", null, List.of("bash"), "", true, "test"))));
+
+        String desc = rig.subagents.spawnDescription();
+        assertTrue(desc.contains("- reviewer：只读审查（工具：read_file）"), desc);
+        assertTrue(desc.contains("- fixer：修一个文件（派它必须写 owns）"), desc);
+        assertTrue(rig.subagents.tools().stream().filter(t -> t.name().equals("spawn_agent")).findFirst()
+                .orElseThrow().parametersSchema().contains("\"reviewer\""));
+
+        rig.spawn(Map.of("message", "审 a", "agent_type", "reviewer"));
+        awaitIdle(rig.subagents);
+        assertEquals(List.of("read_file"), reviewer.menus.get(0));
+        String system = reviewer.seen.get(0).get(0).content();
+        assertTrue(system.contains("## 「reviewer」的规矩") && system.contains("只看不改"), "定义正文就是它的系统提示词");
+
+        ToolResult noOwns = rig.exec("spawn_agent", Map.of("message", "修 a", "agent_type", "fixer"));
+        assertFalse(noOwns.ok());
+        assertTrue(noOwns.content().contains("owns"), noOwns.content());
+        rig.spawn(Map.of("message", "修 a", "agent_type", "fixer", "owns", List.of("a.py")));
+        awaitIdle(rig.subagents);
+        assertEquals(List.of("read_file", "write_file"), fixer.menus.get(0));
+
+        ToolResult unknown = rig.exec("spawn_agent", Map.of("message", "x", "agent_type", "nobody"));
+        assertTrue(unknown.content().contains("reviewer"), unknown.content());
     }
 
     @Test
@@ -585,11 +650,11 @@ class SubAgentsTest {
     }
 
     @Test
-    @DisplayName("配置：默认并发 3、三种类型、子 agent 步数同主 agent、30 分钟时限；环境变量能改，写错就报")
+    @DisplayName("配置：默认并发 3、类型不收窄、子 agent 步数同主 agent、30 分钟时限；环境变量能改，写错就报")
     void settingsFromEnv() {
         SubAgents.Settings d = settings(Map.of(), 100, null);
         assertEquals(3, d.maxThreads());
-        assertEquals(java.util.Set.of("default", "explorer", "worker"), d.roles());
+        assertEquals(java.util.Set.of(), d.roles());
         assertEquals(100, d.childMaxSteps());
         assertEquals(30 * 60_000L, d.childTimeoutMillis());
 
@@ -602,7 +667,9 @@ class SubAgentsTest {
 
         assertThrows(IllegalArgumentException.class, () -> settings(Map.of("MYAGENT_SUBAGENT_MAX", "x"), 1, null));
         assertThrows(IllegalArgumentException.class, () -> settings(Map.of("MYAGENT_SUBAGENT_MAX", "0"), 1, null));
-        assertThrows(IllegalArgumentException.class, () -> settings(Map.of("MYAGENT_SUBAGENT_ROLES", "reviewer"), 1, null));
+        // 自定义类型的名字也收得下（是不是真有这个类型，接上定义时再说）；名字不成形就报
+        assertEquals(java.util.Set.of("reviewer"), settings(Map.of("MYAGENT_SUBAGENT_ROLES", "reviewer"), 1, null).roles());
+        assertThrows(IllegalArgumentException.class, () -> settings(Map.of("MYAGENT_SUBAGENT_ROLES", "代码审查"), 1, null));
     }
 
     @Test

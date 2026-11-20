@@ -143,7 +143,7 @@ MYAGENT_CONTEXT_TOKENS=12000 ./myagent-tui
 模式是**状态**不是命令——它写在屏幕上，不用每句话都重敲一遍，也不会出现「我刚才到底加没加
 `/plan`」这种事。模式由后端持有，手机和终端看到的是同一个；后端没宣告的模式会被跳过，切不进去。
 
-plan 模式下 agent 手上只剩看的工具（读、搜、联网读、读技能），要派子 agent 也只能派 explorer；
+plan 模式下 agent 手上只剩看的工具（读、搜、联网读、读技能），派出去的子 agent 也一样（不管什么类型）；
 bash 和 MCP 工具一律不给——它们会不会改东西没法从名字上判断。调研完它调 `exit_plan_mode`
 把计划交上来，框里有三个选项：**批准**（退回 normal，同一个 agent 接着照计划改）、
 **不批准并说说要改什么**（这句话原样交给它，它改了再交）、**不批准**。
@@ -287,8 +287,16 @@ myagent 一步都不插手。`--isolated` 每次开临时 profile，进程一死
 
 - `spawn_agent` **立刻返回**，子 agent 在后台和主 agent 同时干活；做完时结果以
   `<subagent_notification>` 自动送进主对话，主 agent 只在关键路径卡住时才 `wait_agent`。
-- 三种类型：`default`（和主 agent 同样的工具）、`explorer`（没有写文件的工具，问代码库的具体问题）、
-  `worker`（直接改工作区，派活时要划清各自负责的文件——大家共用一个目录）。
+- 内置三种类型：`default`（和主 agent 同样的工具）、`explorer`（没有写文件的工具，问代码库的具体问题）、
+  `worker`（直接改工作区，派活时要划清各自负责的文件——大家共用一个目录）。还能自己加，见下面「自定义类型」。
+- 两种派法，照 Claude Code：
+  - **按类型派**：子 agent 用**自己的**系统提示词（身份、工作方式、子 agent 的交差规矩，再加这种类型的规矩），
+    不是主 agent 那一份；从零开始，只看得到派活时写的那段话；不带长期记忆索引。同一类型的系统提示词逐字相同，
+    几个同类子 agent 之间前缀缓存照样命中。
+  - **`fork`**：带着主对话到目前为止的全部历史分出去，系统提示词、工具菜单、模型都和主 agent 一模一样，
+    前缀缓存整段命中，所以最便宜。适合要交代的背景太多、或者想从同一个起点并行试几种做法的时候。
+    派遣和进出 plan 模式的工具留在它的菜单上（拿掉的话工具定义变了、缓存就丢了），调了会被拒绝。
+    `fork` 是保留名，自定义类型不能叫这个。以前的 `fork_context` 参数撤了，换成派 `fork`。
 - 子 agent 不能再派（深度 1）。主 agent 交卷前会等还在跑的子 agent；按停时它们一起停。
 - 派 worker 必须写明 `owns`（它负责的文件或目录）：它跑着时别人写不了这些路径，它也只能写这些路径。
 - 子 agent 交回的通知里带 `observed`——框架记录的实际写了哪些文件、跑了哪些命令和退出码，不靠它自述。
@@ -297,16 +305,44 @@ myagent 一步都不插手。`--isolated` 每次开临时 profile，进程一死
   写清楚「什么时候用」（对得上某种类型、有几件能并行的活、要翻好几个文件才答得上的问题）和
   「什么时候别用」（只查一个已知的东西、改一两处、用户说了不要派）。不再等你开口许可，
   也不在开工前另跑一次委派决策——以前的 `explicit` / `proactive` / `auto` 三档和那个决策器都撤了。
-- plan 模式下只能派 `explorer`，已经开着的 worker 也收不到新活——不然等于从侧门绕过「先别动手」。
+- 子 agent **跟着主对话的权限模式走**（照 Claude Code）：主对话在 plan 模式时，所有子 agent 每一步都只剩只读的工具，
+  不管类型，也不管是不是 plan 模式之前就派出去了。以前是「plan 模式只许派 explorer」，可 explorer 手上有 bash，照样写得了文件。
+- 子 agent 拿不到进出 plan 模式的两个工具：模式是主对话的事。
 - `MYAGENT_SUBAGENTS=off` 关掉（不给这几个工具），默认 `on`。
 
 | 环境变量 | 默认 | 作用 |
 |---|---|---|
 | `MYAGENT_SUBAGENT_MAX` | `3` | 同时开着的子 agent 上限（做完没关的也算） |
-| `MYAGENT_SUBAGENT_ROLES` | 全部 | 允许派的类型，逗号分隔，如 `explorer` |
+| `MYAGENT_SUBAGENT_ROLES` | 全部 | 只允许派这几种类型，逗号分隔，如 `explorer`；自定义的名字也行 |
 | `MYAGENT_SUBAGENT_STEPS` | 同主 agent | 子 agent 每一轮的步数上限 |
 | `MYAGENT_SUBAGENT_TIMEOUT` | `1800` | 子 agent 每一轮的时限（秒），超时按出错交回 |
 | `MYAGENT_TOTAL_STEPS` | 不设 | 主 agent 和子 agent 共用的步数预算（算力对齐的对照用） |
+
+#### 自定义类型
+
+照 Claude Code 的 subagent 文件：在 `agents/` 目录里放一份 `<名字>.md`，YAML 头写清什么时候派它、它能用哪些工具，
+正文就是它要守的规矩（拼进它第一条消息）。
+
+```markdown
+---
+name: code-reviewer
+description: 审查一组改动，只读，回一份问题清单
+tools: read_file, grep, glob, bash
+disallowedTools: bash
+---
+只看不改。每条问题给出 文件:行号 和理由；拿不准的标明拿不准。
+```
+
+- **去哪找**：工作区和家目录下的 `.myagent/agents/`、`.claude/agents/`。工作区压家目录，`.myagent` 压 `.claude`，
+  都压内置的——同名就是覆盖（写一份 `worker.md` 就能改内置 worker 的规矩）。启动时读一次。
+- **工具**：先拿掉 `disallowedTools`，再在剩下的里按 `tools` 挑；`tools` 不写就是剩下的全部。两道都只会收窄——
+  定义给不出主 agent 没有的工具，也绕不过审批，所以项目目录里的定义可以放心读。
+  通配只许写在 `mcp__` 开头的名字末尾（`mcp__chrome__*`）；`Read`、`Grep`、`Bash(git diff *)` 这类
+  Claude Code 写法会翻成我们的工具名，`.claude/agents/` 下现成的定义直接能用。
+- `owns: required`：派它必须写 `owns`（和内置 worker 一样）。覆盖内置 worker 时要自己写上。
+- 坏定义只作废它自己（没写 description、名字不是小写字母数字 `-` `_`、通配写错），日志里有一行 warn；
+  `tools` 里对不上任何工具的名字也会 warn——写错名字的症状是「它就是不用那个工具」。
+- 无头运行（`--once`）只用内置三种，评测结果不受本机定义的影响。
 
 本机评测：`bench/asyncodebench/run_matrix.sh A,D cookiecutter 3` 按组交替跑，
 `bench/asyncodebench/summarize.py <清单>` 汇总成表（组的定义见脚本开头）。

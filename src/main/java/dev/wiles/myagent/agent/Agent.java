@@ -309,7 +309,10 @@ public final class Agent {
         if (!toolGate.test(name)) {
             return ToolResult.error(name + " 眼下不能用"
                     + (PlanMode.READ_ONLY_TOOLS.contains(name) ? ""
-                            : "：现在是 plan 模式，只许调研。要动手先把计划交给 " + PlanMode.EXIT_TOOL + "，用户批准后再做"));
+                            : tools.get(PlanMode.EXIT_TOOL) != null
+                                    ? "：现在是 plan 模式，只许调研。要动手先把计划交给 " + PlanMode.EXIT_TOOL + "，用户批准后再做"
+                                    // 子 agent 手上没有 exit_plan_mode：它跟着主对话的模式走，自己出不去
+                                    : "：主对话现在是 plan 模式，只许调研、不能改东西。要改的写进答复交给主 agent"));
         }
         if (tools.isDeferred(name) && !ToolSearchTool.loadedIn(history).contains(name)) {
             return ToolResult.error(name + " 是延迟加载的工具，还没拉取过它的参数说明。先调 "

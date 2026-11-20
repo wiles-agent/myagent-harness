@@ -26,7 +26,13 @@ public enum PromptMode {
     AGENT("modes/agent.md", true, List.of("## 身份", "## 语言", "## 工作区")),
 
     /** 单独派出去的一步（收尾审查）：只干这一步，不越界。 */
-    TASK("modes/task.md", true, List.of("## 身份", "## 语言", "## 工作区"));
+    TASK("modes/task.md", true, List.of("## 身份", "## 语言", "## 工作区")),
+
+    /**
+     * 按类型派出去的子 agent（fork 除外，它沿用主对话那一份）。照 Claude Code：子 agent 用<b>自己的</b>系统提示词，
+     * 不是主 agent 那一份——那一份里有进出 plan 模式、怎么派子 agent 这些它用不上的话。
+     */
+    SUBAGENT("modes/subagent.md", true, List.of("## 身份", "## 语言", "## 工作区", "## 模式：子 agent"));
 
     private final String resourcePath;
     private final boolean includesBase;
