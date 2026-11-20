@@ -13,11 +13,15 @@ import dev.wiles.myagent.context.TokenLedger;
 import dev.wiles.myagent.context.TokenMeter;
 import dev.wiles.myagent.llm.DeepSeekClient;
 import dev.wiles.myagent.llm.LlmClient;
+import dev.wiles.myagent.mcp.McpConfig;
+import dev.wiles.myagent.mcp.McpServers;
 import dev.wiles.myagent.memory.MemoryIndex;
 import dev.wiles.myagent.memory.MemoryStore;
 import dev.wiles.myagent.review.ReviewLoop;
 import dev.wiles.myagent.tool.BuiltinTools;
+import dev.wiles.myagent.tool.Tool;
 import dev.wiles.myagent.tool.ToolRegistry;
+import dev.wiles.myagent.tool.ToolSearchTool;
 import dev.wiles.myagent.tool.Workspace;
 import dev.wiles.myagent.tool.safety.ApprovalPolicy;
 
@@ -25,6 +29,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -93,6 +98,15 @@ public final class Headless {
         Workspace workspace = new Workspace(options.workspace());
         MemoryStore memory = MemoryStore.inUserHome();
         ToolRegistry tools = BuiltinTools.createDefault(workspace, ApprovalPolicy.approveAll(), memory);
+        // MCP 默认不接：评测靠这条路径跑，结果不能随本机 ~/.myagent/mcp.json 变。
+        // MYAGENT_MCP=on 才接，拿来比「接了某个 MCP server 前后」——和 MYAGENT_SUBAGENTS 同一种对照开关。
+        // =eager 也接，但不延迟加载：工具说明直接进菜单。延迟时模型手里有 grep 就不会去 tool_search，
+        // 想测「用上了这个 server 会怎样」得先让它看得见
+        String mcpMode = System.getenv("MYAGENT_MCP");
+        boolean mcpEager = "eager".equalsIgnoreCase(mcpMode);
+        McpServers mcp = McpServers.start("on".equalsIgnoreCase(mcpMode) || mcpEager
+                ? McpConfig.load() : new McpConfig(Map.of()));
+        tools.registerAll(mcp.tools());
         TokenMeter meter = new TokenMeter();
         java.util.function.Supplier<LlmClient> clients = () -> meter.meter(new DeepSeekClient(config));
         int maxSteps = options.maxSteps() > 0 ? options.maxSteps() : Agent.DEFAULT_MAX_STEPS;
@@ -126,6 +140,16 @@ public final class Headless {
                             });
             if (subagents != null) {
                 tools.registerAll(subagents.tools());
+            }
+            // 和界面那条路径一样：MCP 工具平时只露名字，用到时 tool_search 拉完整说明。
+            // 没接 MCP 时这里什么都不做，菜单和以前一字不差
+            if (!mcp.tools().isEmpty()) {
+                if (!mcpEager) {
+                    tools.defer(mcp.tools().stream().map(Tool::name).toList());
+                    tools.register(new ToolSearchTool(tools));
+                }
+                summary.put("mcpTools", mcp.tools().size());
+                summary.put("mcpEager", mcpEager);
             }
             Agent agent = new Agent(clients.get(), tools,
                     SystemPrompt.forWorkspace(workspace.root(), index, false),
@@ -201,6 +225,8 @@ public final class Headless {
             summary.put("status", "ERROR");
             summary.put("failed", e.getClass().getSimpleName() + ": " + e.getMessage());
             exit = 1;
+        } finally {
+            mcp.close();     // MCP server 是子进程，不关就是孤儿
         }
         TokenLedger ledger = meter.snapshot();
         summary.put("promptTokens", ledger.promptTokens());

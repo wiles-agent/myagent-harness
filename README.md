@@ -83,7 +83,7 @@ tests/test_paginate.py 有测试挂了，修好 src/paginate.py，别改测试
 java -jar target/myagent.jar --once prompt.txt -d ~/proj --once-out summary.json
 ```
 
-`--once` 跑一次就退，最后的回答打到 stdout，`--once-out` 把步数、token 和结果写成 JSON。这条路径会自动批准所有操作，只在容器或沙盒里用。[`bench/`](bench/) 里是用它搭的成功率评测。
+`--once` 跑一次就退，最后的回答打到 stdout，`--once-out` 把步数、token 和结果写成 JSON。默认不接 `~/.myagent/mcp.json` 里的 MCP server（评测结果不该随本机配置变），要接就设 `MYAGENT_MCP=on`；设 `MYAGENT_MCP=eager` 则不延迟加载，工具说明直接进菜单。这条路径会自动批准所有操作，只在容器或沙盒里用。[`bench/`](bench/) 里是用它搭的成功率评测。
 
 ## 在哪儿用
 
