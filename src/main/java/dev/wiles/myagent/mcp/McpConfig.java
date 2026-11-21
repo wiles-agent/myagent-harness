@@ -116,6 +116,11 @@ public record McpConfig(Map<String, ServerSpec> servers) {
         return Set.copyOf(result);
     }
 
+    /** 一段 JSON 读成一个 server 的定义；没写 command 是 null。子 agent 定义里内联的 server 用它。 */
+    public static ServerSpec spec(String name, JsonNode node) {
+        return specOf(name, node);
+    }
+
     private static ServerSpec specOf(String name, JsonNode node) {
         String command = node.path("command").asText("");
         if (command.isBlank()) {

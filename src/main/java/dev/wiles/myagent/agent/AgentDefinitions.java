@@ -94,7 +94,18 @@ public final class AgentDefinitions {
 
     /** 工作区和家目录下的 {@code .myagent/agents}、{@code .claude/agents}。 */
     public static AgentDefinitions load(Path workspace) {
-        return load(searchPath(workspace, Path.of(System.getProperty("user.home"))));
+        return load(workspace, Path.of(System.getProperty("user.home")));
+    }
+
+    /** 同上，家目录可指定。家目录下的定义才能内联启动 MCP server，见 {@link AgentDefinition#parse(Path, String, boolean)}。 */
+    public static AgentDefinitions load(Path workspace, Path home) {
+        List<Path> dirs = searchPath(workspace, home);
+        java.util.Set<Path> fromHome = new java.util.HashSet<>();
+        if (home != null) {
+            fromHome.add(home.resolve(".myagent").resolve("agents"));
+            fromHome.add(home.resolve(".claude").resolve("agents"));
+        }
+        return load(dirs, fromHome);
     }
 
     /**
@@ -104,7 +115,7 @@ public final class AgentDefinitions {
      */
     public static AgentDefinitions forHeadless(java.util.function.Function<String, String> env, Path workspace,
                                                Path home) {
-        return headlessOptIn(env) ? load(searchPath(workspace, home)) : builtins();
+        return headlessOptIn(env) ? load(workspace, home) : builtins();
     }
 
     /** {@code MYAGENT_AGENTS} 打开了没有。无头运行里类型定义和技能预载共用这一个开关。 */
@@ -123,8 +134,12 @@ public final class AgentDefinitions {
         return dirs;
     }
 
-    /** {@code dirs} 按优先级从高到低。读的时候倒过来，高的后读、覆盖低的。 */
+    /** {@code dirs} 按优先级从高到低。读的时候倒过来，高的后读、覆盖低的。都按工作区算（不能内联起进程）。 */
     static AgentDefinitions load(List<Path> dirs) {
+        return load(dirs, java.util.Set.of());
+    }
+
+    static AgentDefinitions load(List<Path> dirs, java.util.Set<Path> fromHome) {
         List<AgentDefinition> found = new ArrayList<>();
         List<Path> lowestFirst = new ArrayList<>(dirs);
         Collections.reverse(lowestFirst);           // List.reversed() 要 Java 21
@@ -136,7 +151,7 @@ public final class AgentDefinitions {
                 for (Path file : files.filter(f -> f.toString().endsWith(".md") && Files.isRegularFile(f))
                         .sorted().toList()) {
                     try {
-                        AgentDefinition d = AgentDefinition.parse(file, Files.readString(file));
+                        AgentDefinition d = AgentDefinition.parse(file, Files.readString(file), fromHome.contains(dir));
                         if (d != null) {
                             found.add(d);
                         }

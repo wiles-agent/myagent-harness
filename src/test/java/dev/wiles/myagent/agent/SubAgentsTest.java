@@ -456,6 +456,35 @@ class SubAgentsTest {
     }
 
     @Test
+    @DisplayName("mcpServers：名字引用的那家工具照给（白名单没列也给）；内联的派出时单独拉起、只给它，会话结束一起关")
+    void mcpServersForTheChild() throws Exception {
+        Script refChild = new Script().reply("ok");
+        Script inlineChild = new Script().reply("ok");
+        Rig rig = new Rig(refChild, inlineChild);
+        rig.tools.register(stub("mcp__github__search")).register(stub("mcp__chrome__click"));
+        List<String> launched = new CopyOnWriteArrayList<>();
+        List<String> closed = new CopyOnWriteArrayList<>();
+        rig.subagents.withMcpLauncher(specs -> {
+            launched.addAll(specs.keySet());
+            return new SubAgents.McpHandle(List.of(stub("mcp__pw__open")), () -> closed.add("pw"));
+        }).withDefinitions(AgentDefinitions.of(List.of(
+                AgentDefinition.builder("triager", "看 issue").source("t").tools(List.of("read_file"))
+                        .mcpRefs(List.of("github")).build(),
+                AgentDefinition.builder("browser", "点页面").source("t").tools(List.of("read_file"))
+                        .mcpInline(Map.of("pw", M.readTree("{\"command\": \"npx\"}"))).build())));
+
+        rig.spawn(Map.of("message", "x", "agent_type", "triager"));
+        rig.spawn(Map.of("message", "x", "agent_type", "browser"));
+        awaitIdle(rig.subagents);
+        assertEquals(List.of("read_file", "mcp__github__search"), refChild.menus.get(0));
+        assertEquals(List.of("read_file", "mcp__pw__open"), inlineChild.menus.get(0));
+        assertEquals(List.of("pw"), launched);
+
+        rig.subagents.shutdown();
+        assertEquals(List.of("pw"), closed, "内联拉起的 server 跟着会话一起关，不留孤儿进程");
+    }
+
+    @Test
     @DisplayName("hooks：类型定义里的 PreToolUse 只管这一种子 agent——对上的工具调用前跑，拦下时工具不执行、理由回给模型")
     void preToolUseHooksGuardTheChild(@org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
         List<String> ran = new CopyOnWriteArrayList<>();

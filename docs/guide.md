@@ -371,6 +371,12 @@ disallowedTools: bash
   `tools` 名单只能整个给或不给，「bash 能用但只许跑只读 SQL」这种细一层的规矩靠它（Claude Code 文档里 db-reader 的做法）。
   别的事件忽略并记一笔；`matcher` 写坏了整份定义作废。hook 是会执行的命令，和工作区 `.myagent/settings.json` 里的
   hook 同一个信任边界：信任这个目录就是信任它的配置。
+- `mcpServers`：这种子 agent 用的 MCP server（照 Claude Code）。两种写法可以混着写：
+  - **按名字引用**（`- github`）：会话 `mcp.json` 里已配的 server，它的工具照给，`tools` 白名单没列也给（黑名单照样生效）；
+    这个会话里没有这家就记一笔。
+  - **内联定义**（`- playwright: {command: npx, args: [...]}`，和 `mcp.json` 里同一种定义）：派出时单独拉起、只给它，
+    会话结束（或无头运行退出前）一起关。浏览器类工具和主会话一样套按站点审批。**只认家目录里的定义**：
+    MCP 配置本来就只读家目录的 `mcp.json`，工作区里的定义写了内联整份作废——那等于让仓库在别人机器上起进程。
 - 自定义类型的 `description` 加起来超过约 15000 token 时，启动日志里会报总数（照 Claude Code）：这些描述每一轮都跟着
   `spawn_agent` 的说明发出去。只提醒、不丢定义；把描述写短，细节挪进正文（正文只进那个子 agent 自己的系统提示词）。
 - `model: <模型名>`：这种子 agent 用的模型，`inherit` 或不写就跟主对话一样。照 Claude Code，这是子 agent 控制成本的那条路：

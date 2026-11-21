@@ -337,6 +337,20 @@ public final class SubAgents implements Mailbox {
     }
 
     private volatile ClientFactory clientFactory;
+
+    /** 类型定义里内联的 MCP server，拉起来之后的样子：它的工具，和怎么关掉。 */
+    public record McpHandle(List<Tool> tools, Runnable close) {
+    }
+
+    /** 按「名字 → 定义」拉起一组 MCP server（见 {@link #withMcpLauncher}）。 */
+    @FunctionalInterface
+    public interface McpLauncher {
+        McpHandle launch(Map<String, JsonNode> servers);
+    }
+
+    private volatile McpLauncher mcpLauncher;
+    /** 为子 agent 内联拉起的 server，会话结束时一起关。 */
+    private final List<McpHandle> launched = new java.util.concurrent.CopyOnWriteArrayList<>();
     /** 服务认不认思考开关（会话自己配过 thinking 才算）。不认时 effort 不生效，免得给官方接口发它不认的字段。 */
     private volatile boolean thinkingSupported;
     /** 能派哪些类型。默认只有内置的，{@link #withDefinitions} 换成带自定义的。 */
@@ -459,6 +473,12 @@ public final class SubAgents implements Mailbox {
                     .append("，正文里的相对路径都相对这里）\n\n").append(skill.body().strip()).append("\n\n");
         }
         return out.toString();
+    }
+
+    /** 接上拉起 MCP server 的办法：类型定义里内联的 mcpServers 派出时用它起，只给那个子 agent。 */
+    public SubAgents withMcpLauncher(McpLauncher launcher) {
+        this.mcpLauncher = launcher;
+        return this;
     }
 
     /** 会话是只读启动的：子 agent 的系统提示词跟主 agent 一样带上只读那段。 */
@@ -589,6 +609,14 @@ public final class SubAgents implements Mailbox {
      * @return 都停下了
      */
     public boolean stopAll(long graceMillis) {
+        try {
+            return awaitStopped(graceMillis);
+        } finally {
+            closeLaunched();        // 无头运行退出前只走这里不走 shutdown：内联拉起的 MCP 进程也得在这儿关
+        }
+    }
+
+    private boolean awaitStopped(long graceMillis) {
         interruptAll();
         long until = System.nanoTime() + graceMillis * 1_000_000L;
         synchronized (lock) {
@@ -693,11 +721,23 @@ public final class SubAgents implements Mailbox {
             reminded.clear();
             lock.notifyAll();
         }
+        closeLaunched();
+    }
+
+    /** 为子 agent 内联拉起的 MCP server 全关掉：它们是子进程，不关就是孤儿。 */
+    private void closeLaunched() {
+        for (McpHandle handle : launched) {
+            try {
+                handle.close().run();
+            } catch (RuntimeException e) {
+                log.warn("关子 agent 的 MCP server 时出错: {}", e.getMessage());
+            }
+        }
+        launched.clear();
     }
 
     // ---------------------------------------------------------------- 生命周期
 
-    /** 开一轮。调用方持有 {@link #lock}。 */
     /** 审批框上的身份：「scout（worker） · agent-3」，没起名就是「worker 子 agent · agent-3」。 */
     static ApprovalOrigin originOf(Child child) {
         String title = child.name != null ? child.name + "（" + child.role.name() + "）"
@@ -705,6 +745,7 @@ public final class SubAgents implements Mailbox {
         return new ApprovalOrigin(child.id, child.role.name(), title);
     }
 
+    /** 开一轮。调用方持有 {@link #lock}。 */
     private void startTurn(Child child, String input) {
         child.running = true;
         child.state = State.RUNNING;
@@ -1057,9 +1098,20 @@ public final class SubAgents implements Mailbox {
      * 写文件的工具换成以这个子 agent 为写入方的那一版。
      */
     private ToolRegistry toolsFor(AgentDefinition role, String id) {
-        Set<String> menu = new java.util.LinkedHashSet<>(role.resolve(inheritable()));
+        List<String> available = inheritable();
+        Set<String> menu = new java.util.LinkedHashSet<>(role.resolve(available));
         if (role.memory() == AgentDefinition.Memory.NONE) {
             menu.removeAll(MEMORY_TOOLS);      // 照 Claude Code 不继承长期记忆，见 AgentDefinition.Memory
+        }
+        // mcpServers 里按名字引用的：那家 server 的工具照给，白名单没列也给（黑名单照样生效）
+        for (String ref : role.mcpRefs()) {
+            String prefix = "mcp__" + ref + "__";
+            List<String> fromRef = available.stream().filter(n -> n.startsWith(prefix))
+                    .filter(n -> role.disallowedTools().stream().noneMatch(p -> AgentDefinition.matches(p, n))).toList();
+            if (fromRef.isEmpty()) {
+                log.warn("agent 类型 {} 引用的 MCP server {} 这个会话里没有（mcp.json 里没配，或没起来）", role.name(), ref);
+            }
+            menu.addAll(fromRef);
         }
         ToolRegistry narrowed = new ToolRegistry();
         for (Tool tool : allTools.all()) {
@@ -1073,6 +1125,23 @@ public final class SubAgents implements Mailbox {
         narrowed.defer(allTools.deferredTools().stream().map(Tool::name).toList());
         if (narrowed.get(ToolSearchTool.NAME) != null) {
             narrowed.replace(new ToolSearchTool(narrowed));
+        }
+        // mcpServers 里内联定义的：这时才拉起来，只给它；和主菜单重名的跳过
+        McpLauncher launcher = mcpLauncher;
+        if (!role.mcpInline().isEmpty()) {
+            if (launcher == null) {
+                log.warn("这个会话不能为子 agent 拉起 MCP server，{} 内联的 {} 不接", role.name(), role.mcpInline().keySet());
+            } else {
+                McpHandle handle = launcher.launch(role.mcpInline());
+                launched.add(handle);
+                for (Tool tool : handle.tools()) {
+                    if (narrowed.get(tool.name()) == null) {
+                        narrowed.register(tool);
+                    } else {
+                        log.warn("{} 内联的 MCP 工具 {} 和已有的重名，跳过", role.name(), tool.name());
+                    }
+                }
+            }
         }
         // 类型定义里的 PreToolUse hook：只管这一种子 agent，每个工具调用前先问一遍
         if (role.hooks() != null) {

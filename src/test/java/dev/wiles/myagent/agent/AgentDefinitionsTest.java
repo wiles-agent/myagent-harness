@@ -136,6 +136,51 @@ class AgentDefinitionsTest {
         assertNotNull(AgentDefinition.parse(Path.of("a.md"), "---\ndescription: x\ntools:\n---\n"));
     }
 
+    private static final String WITH_MCP = """
+            ---
+            description: 用浏览器
+            mcpServers:
+              - github
+              - playwright:
+                  type: stdio
+                  command: npx
+                  args: ["-y", "@playwright/mcp@latest"]
+            ---
+            """;
+
+    @Test
+    @DisplayName("mcpServers：名字引用哪儿都能写；内联定义要起进程，只认家目录里的定义，工作区里写了整份作废")
+    void mcpServersRefsAndInline() {
+        AgentDefinition user = AgentDefinition.parse(Path.of("u.md"), WITH_MCP, true);
+        assertEquals(List.of("github"), user.mcpRefs());
+        assertEquals("npx", user.mcpInline().get("playwright").path("command").asText());
+        assertEquals("@playwright/mcp@latest", user.mcpInline().get("playwright").path("args").get(1).asText());
+
+        assertNull(AgentDefinition.parse(Path.of("p.md"), WITH_MCP, false), "工作区的定义不能借子 agent 起进程");
+        assertNull(AgentDefinition.parse(Path.of("p.md"), WITH_MCP), "默认按工作区算，宁紧勿松");
+        AgentDefinition refsOnly = AgentDefinition.parse(Path.of("p.md"),
+                "---\ndescription: x\nmcpServers:\n  - github\n---\n", false);
+        assertEquals(List.of("github"), refsOnly.mcpRefs());
+        assertTrue(refsOnly.mcpInline().isEmpty());
+        assertNull(AgentDefinition.parse(Path.of("u.md"),
+                "---\ndescription: x\nmcpServers:\n  - broken:\n      args: [\"x\"]\n---\n", true), "内联的没写 command");
+    }
+
+    @Test
+    @DisplayName("加载：家目录里的定义能内联 MCP，工作区里的不能")
+    void inlineMcpOnlyFromHome(@TempDir Path tmp) throws Exception {
+        Path ws = tmp.resolve("ws");
+        Path home = tmp.resolve("home");
+        Files.createDirectories(home.resolve(".myagent/agents"));
+        Files.writeString(home.resolve(".myagent/agents/browser.md"), WITH_MCP);
+        Files.createDirectories(ws.resolve(".myagent/agents"));
+        Files.writeString(ws.resolve(".myagent/agents/sneaky.md"), WITH_MCP);
+
+        AgentDefinitions d = AgentDefinitions.load(ws, home);
+        assertNotNull(d.get("browser"));
+        assertNull(d.get("sneaky"));
+    }
+
     @Test
     @DisplayName("无头模式：默认只用内置类型（评测不受本机定义影响）；MYAGENT_AGENTS=on 才读工作区和家目录的定义")
     void headlessLoadsCustomTypesOnlyWhenAsked(@TempDir Path tmp) throws Exception {

@@ -221,7 +221,19 @@ public final class Headless {
                 subagents.withClientFactory((model, thinking) -> meter.meter(new DeepSeekClient(
                             config.withModel(model).withThinking(thinking))), config.thinking() != null)
                         .withDefinitions(dev.wiles.myagent.agent.AgentDefinitions.forHeadless(System::getenv,
-                                workspace.root(), Path.of(System.getProperty("user.home"))));
+                                workspace.root(), Path.of(System.getProperty("user.home"))))
+                        .withMcpLauncher(servers -> {
+                        // 类型定义里内联的 MCP server：和 mcp.json 里的同一种定义，派出时单独拉起
+                        java.util.Map<String, dev.wiles.myagent.mcp.McpConfig.ServerSpec> specs = new java.util.LinkedHashMap<>();
+                        servers.forEach((name, node) -> {
+                            var spec = dev.wiles.myagent.mcp.McpConfig.spec(name, node);
+                            if (spec != null) {
+                                specs.put(name, spec);
+                            }
+                        });
+                        var childServers = McpServers.start(new dev.wiles.myagent.mcp.McpConfig(specs));
+                        return new SubAgents.McpHandle(childServers.tools(), childServers::close);
+                    });
                 // 读了自定义类型，就也接上技能库：定义里的 skills 要靠它预载。没打开就不读，和类型同一个开关
                 if (dev.wiles.myagent.agent.AgentDefinitions.headlessOptIn(System::getenv)) {
                     var skillLibrary = dev.wiles.myagent.skill.SkillLibrary.load(workspace.root());

@@ -290,7 +290,20 @@ public final class AgentServer extends WebSocketServer {
                     .withReadOnlyPolicy(options.readOnly())
                     .withClientFactory((model, thinking) -> meter.meter(new DeepSeekClient(
                             config.withModel(model).withThinking(thinking))), config.thinking() != null)
-                    .withSkills(this::findSkill);   // 技能库在下面才加载；派的时候才查，那时已经有了
+                    .withSkills(this::findSkill)    // 技能库在下面才加载；派的时候才查，那时已经有了
+                    .withMcpLauncher(servers -> {
+                        // 类型定义里内联的 MCP server：和 mcp.json 里的同一种定义，派出时单独拉起
+                        java.util.Map<String, dev.wiles.myagent.mcp.McpConfig.ServerSpec> specs = new java.util.LinkedHashMap<>();
+                        servers.forEach((name, node) -> {
+                            var spec = dev.wiles.myagent.mcp.McpConfig.spec(name, node);
+                            if (spec != null) {
+                                specs.put(name, spec);
+                            }
+                        });
+                        var childServers = McpServers.start(new dev.wiles.myagent.mcp.McpConfig(specs));
+                        // 浏览器类工具和主会话的一样套按站点审批：不然子 agent 内联一个浏览器 server 就绕过了它
+                        return new SubAgents.McpHandle(guardBrowserTools(childServers.tools(), policy), childServers::close);
+                    });
         }
         this.subagentsRef = subagents;
         // plan 模式的两个工具。只读启动时不接：那时什么都改不了，没有「先规划再动手」这回事

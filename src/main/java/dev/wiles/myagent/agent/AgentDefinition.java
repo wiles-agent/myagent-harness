@@ -50,12 +50,18 @@ import java.util.regex.Pattern;
  *                        我们只有一个思考开关：low 关、其余开；服务不认这个开关时不生效，见 {@code SubAgents#thinkingFor}
  * @param hooks           只管这一种子 agent 的 hook，Claude Code 的格式（{@code {"PreToolUse": [...]}}）；null 表示没有。
  *                        支持 PreToolUse（见 {@link dev.wiles.myagent.hooks.ToolHooks}），别的事件忽略并记一笔
+ * @param mcpRefs         照 Claude Code 的 {@code mcpServers} 里按名字引用的：会话 mcp.json 里已配的 server，
+ *                        它的工具照给这种子 agent（{@code tools} 白名单没列也给）
+ * @param mcpInline       {@code mcpServers} 里内联定义的：派出时单独拉起、只给它用。要起进程，只认家目录里的定义
  */
 public record AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
                               String rules, boolean ownsRequired, String source, String model, int maxTurns,
                               PermissionMode permissionMode, List<String> skills, Memory memory,
                               boolean background, String color, String effort,
-                              com.fasterxml.jackson.databind.JsonNode hooks) {
+                              com.fasterxml.jackson.databind.JsonNode hooks,
+                              List<String> mcpRefs, Map<String, com.fasterxml.jackson.databind.JsonNode> mcpInline) {
+
+    static final Pattern MCP_NAME = Pattern.compile("[A-Za-z0-9_-]{1,64}");
 
     static final Set<String> EFFORTS = Set.of("low", "medium", "high", "xhigh", "max");
 
@@ -168,13 +174,32 @@ public record AgentDefinition(String name, String description, List<String> tool
                 }
             });
         }
+        mcpRefs = mcpRefs == null ? List.of() : List.copyOf(mcpRefs);
+        for (String ref : mcpRefs) {
+            if (!MCP_NAME.matcher(ref).matches()) {
+                throw new IllegalArgumentException(name + " 的 mcpServers 里 " + ref + " 不是合法的 server 名");
+            }
+        }
+        Map<String, com.fasterxml.jackson.databind.JsonNode> inline = new java.util.LinkedHashMap<>();
+        if (mcpInline != null) {
+            mcpInline.forEach((server, spec) -> {
+                if (!MCP_NAME.matcher(server).matches()) {
+                    throw new IllegalArgumentException(name + " 的 mcpServers 里 " + server + " 不是合法的 server 名");
+                }
+                if (spec == null || spec.path("command").asText("").isBlank()) {
+                    throw new IllegalArgumentException(name + " 内联的 MCP server " + server + " 没写 command");
+                }
+                inline.put(server, spec);
+            });
+        }
+        mcpInline = java.util.Collections.unmodifiableMap(inline);      // 保序：工具菜单的顺序要稳定
     }
 
     /** 只有名字、描述、工具、规矩这几样的常见写法；别的字段取默认。 */
     public AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
                            String rules, boolean ownsRequired, String source) {
         this(name, description, tools, disallowedTools, rules, ownsRequired, source,
-                null, 0, PermissionMode.DEFAULT, List.of(), Memory.NONE, false, null, null, null);
+                null, 0, PermissionMode.DEFAULT, List.of(), Memory.NONE, false, null, null, null, List.of(), Map.of());
     }
 
     /**
@@ -202,6 +227,8 @@ public record AgentDefinition(String name, String description, List<String> tool
         private String color;
         private String effort;
         private com.fasterxml.jackson.databind.JsonNode hooks;
+        private List<String> mcpRefs = List.of();
+        private Map<String, com.fasterxml.jackson.databind.JsonNode> mcpInline = Map.of();
 
         private Builder(String name, String description) {
             this.name = name;
@@ -222,10 +249,13 @@ public record AgentDefinition(String name, String description, List<String> tool
         public Builder color(String v) { this.color = v; return this; }
         public Builder effort(String v) { this.effort = v; return this; }
         public Builder hooks(com.fasterxml.jackson.databind.JsonNode v) { this.hooks = v; return this; }
+        public Builder mcpRefs(List<String> v) { this.mcpRefs = v; return this; }
+        public Builder mcpInline(Map<String, com.fasterxml.jackson.databind.JsonNode> v) { this.mcpInline = v; return this; }
 
         public AgentDefinition build() {
             return new AgentDefinition(name, description, tools, disallowedTools, rules, ownsRequired, source,
-                    model, maxTurns, permissionMode, skills, memory, background, color, effort, hooks);
+                    model, maxTurns, permissionMode, skills, memory, background, color, effort, hooks,
+                    mcpRefs, mcpInline);
         }
     }
 
@@ -309,6 +339,14 @@ public record AgentDefinition(String name, String description, List<String> tool
      * <b>一份坏定义只作废它自己</b>，和技能、MCP 配置是同一条纪律。
      */
     static AgentDefinition parse(Path file, String text) {
+        return parse(file, text, false);       // 不知道从哪来的，按工作区算：宁紧勿松
+    }
+
+    /**
+     * @param fromHome 这份定义在家目录里（用户自己放的）。只有这样的定义能在 mcpServers 里内联启动进程——
+     *                 MCP 配置本来就只读家目录的 mcp.json，工作区里的定义不能借子 agent 绕过这条线
+     */
+    static AgentDefinition parse(Path file, String text, boolean fromHome) {
         Skill.Parsed parsed = Skill.split(text);
         Map<String, String> front = parsed.front();
         String stem = file.getFileName().toString().replaceFirst("\\.md$", "");
@@ -330,11 +368,53 @@ public record AgentDefinition(String name, String description, List<String> tool
                     .color(front.get("color"))
                     .effort(front.get("effort"))
                     .hooks(dev.wiles.myagent.config.MiniYaml.frontMatterField(text, "hooks"))
+                    .mcpRefs(mcpRefs(dev.wiles.myagent.config.MiniYaml.frontMatterField(text, "mcpServers")))
+                    .mcpInline(mcpInline(dev.wiles.myagent.config.MiniYaml.frontMatterField(text, "mcpServers"),
+                            fromHome))
                     .build();
         } catch (IllegalArgumentException e) {
             log.warn("agent 定义 {} 作废: {}", file, e.getMessage());
             return null;
         }
+    }
+
+    /** mcpServers 里按名字引用的那些（列表里的字符串项）。 */
+    static List<String> mcpRefs(com.fasterxml.jackson.databind.JsonNode servers) {
+        List<String> refs = new ArrayList<>();
+        if (servers == null || servers.isNull()) {
+            return refs;
+        }
+        if (!servers.isArray()) {
+            throw new IllegalArgumentException("mcpServers 要是一个列表（照 Claude Code 的写法）");
+        }
+        for (com.fasterxml.jackson.databind.JsonNode item : servers) {
+            if (item.isTextual()) {
+                refs.add(item.asText().strip());
+            } else if (!item.isObject() || item.size() != 1) {
+                throw new IllegalArgumentException("mcpServers 的每一项要么是 server 名，要么是「名字: 定义」");
+            }
+        }
+        return refs;
+    }
+
+    /** mcpServers 里内联定义的那些（列表里的「名字: 定义」项）。工作区里的定义写了就抛。 */
+    static Map<String, com.fasterxml.jackson.databind.JsonNode> mcpInline(com.fasterxml.jackson.databind.JsonNode servers,
+                                                                         boolean fromHome) {
+        Map<String, com.fasterxml.jackson.databind.JsonNode> inline = new java.util.LinkedHashMap<>();
+        if (servers == null || !servers.isArray()) {
+            return inline;
+        }
+        for (com.fasterxml.jackson.databind.JsonNode item : servers) {
+            if (item.isObject() && item.size() == 1) {
+                String server = item.fieldNames().next();
+                inline.put(server, item.get(server));
+            }
+        }
+        if (!inline.isEmpty() && !fromHome) {
+            throw new IllegalArgumentException("工作区里的定义不能在 mcpServers 里内联启动 MCP server（" + inline.keySet()
+                    + "）：那等于让仓库在别人机器上起进程。配到 ~/.myagent/mcp.json 里，再按名字引用");
+        }
+        return inline;
     }
 
     /** 技能名单：和工具名单同样的写法（逗号、方括号、YAML 列表都认），但不做工具名翻译。 */
