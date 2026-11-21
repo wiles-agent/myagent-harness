@@ -147,7 +147,8 @@ public final class BashTool implements Tool {
             // 沙箱外重跑：哪怕是 echo 也问——问的是「出沙箱」这件事本身
             String reason = "要在沙箱外执行（dangerously_disable_sandbox）"
                     + (risk.needsApproval() ? "；" + risk.reason() : "");
-            ApprovalVerdict verdict = approval.decide(ApprovalRequest.bash(command, reason));
+            // 不吃 allow 规则：用户存的命令规则批的是命令本身，不是「出沙箱」
+            ApprovalVerdict verdict = approval.decideIgnoringAllowRules(ApprovalRequest.bash(command, reason));
             if (!verdict.approved()) {
                 return ToolResult.error(verdict.deniedMessage("用户没批准在沙箱外执行这条命令。"
                         + "在沙箱里换一种做法；确实做不到就说明原因，交给用户。"));

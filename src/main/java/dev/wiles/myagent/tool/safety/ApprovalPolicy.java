@@ -33,6 +33,15 @@ public interface ApprovalPolicy {
         return null;
     }
 
+    /**
+     * 不吃 allow 规则地判一次：deny 规则照样拦，其余一律往下问。沙箱外重跑用——用户存
+     * {@code git push origin main} 时批的是「推送」，不是「出沙箱」（照 Claude Code：沙箱外重跑单独确认）。
+     * 只有规则层（{@link PolicyGate}）知道规则，别的实现就是 {@link #decide}。
+     */
+    default ApprovalVerdict decideIgnoringAllowRules(ApprovalRequest request) {
+        return decide(request);
+    }
+
     /** 非交互环境的安全默认值：没人能确认，那就都不批。 */
     static ApprovalPolicy denyAll() {
         return request -> ApprovalVerdict.no("当前没有可以确认的人，危险动作一律不执行。");

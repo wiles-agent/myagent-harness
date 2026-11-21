@@ -131,6 +131,32 @@ class BashSandboxTest {
     }
 
     @Test
+    @DisplayName("沙箱外重跑不吃 allow 规则：用户存 git push origin main 时批的是推送，不是出沙箱（评测里真漏过一次）；deny 照样拦")
+    void unsandboxedRetryIgnoresAllowRules() throws Exception {
+        dev.wiles.myagent.tool.safety.PolicyStore store =
+                new dev.wiles.myagent.tool.safety.PolicyStore(tmp.resolve("policy.json"));
+        store.save(dev.wiles.myagent.tool.safety.ApprovalRules.of(
+                List.of(dev.wiles.myagent.tool.safety.ApprovalRule.of(
+                        dev.wiles.myagent.tool.safety.ApprovalKind.BASH, "git push origin main", "d")),
+                List.of(dev.wiles.myagent.tool.safety.ApprovalRule.of(
+                        dev.wiles.myagent.tool.safety.ApprovalKind.BASH, "git push --force *", "d"))));
+        List<String> human = new ArrayList<>();
+        ApprovalPolicy gate = new dev.wiles.myagent.tool.safety.PolicyGate(request -> {
+            human.add(request.subject());
+            return ApprovalVerdict.no("人没批");
+        }, store);
+        BashTool tool = new BashTool(new Workspace(tmp), new CommandGuard(), gate, new SandboxRunner(on(true), FAKE, gate));
+
+        assertFalse(run(tool, "git push origin main", true).ok(), "规则罩着也得问人，人没批就不跑");
+        assertEquals(List.of("git push origin main"), human);
+
+        human.clear();
+        ToolResult forced = run(tool, "git push --force origin main", true);
+        assertFalse(forced.ok());
+        assertTrue(human.isEmpty(), "deny 规则直接拦，不用问人");
+    }
+
+    @Test
     @DisplayName("allowUnsandboxedCommands: false 时忽略 dangerously_disable_sandbox，照样进沙箱")
     void unsandboxedRetryCanBeDisabled() {
         ToolResult r = run(bash(on(false), FAKE), "echo x", true);

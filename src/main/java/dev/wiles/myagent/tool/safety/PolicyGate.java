@@ -61,6 +61,17 @@ public final class PolicyGate implements ApprovalPolicy {
     }
 
     @Override
+    public ApprovalVerdict decideIgnoringAllowRules(ApprovalRequest request) {
+        ApprovalVerdict denied = denyOnly(request);
+        if (denied != null) {
+            return denied;
+        }
+        // 「以后都同意」在这儿不存规则：存下来的是一条命令规则，下次会连「出沙箱」一起放行
+        ApprovalVerdict verdict = ask.decide(request);
+        return verdict.approved() ? ApprovalVerdict.yes() : verdict;
+    }
+
+    @Override
     public ApprovalVerdict decide(ApprovalRequest request) {
         reloadIfChanged();
 
