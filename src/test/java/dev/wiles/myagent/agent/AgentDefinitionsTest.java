@@ -131,6 +131,18 @@ class AgentDefinitionsTest {
     }
 
     @Test
+    @DisplayName("permissionMode: auto 只认家目录里的定义：它比问人宽，项目目录里的定义不能借它放宽")
+    void autoModeOnlyFromHome() {
+        String text = "---\ndescription: x\npermissionMode: auto\n---\n";
+        assertEquals(AgentDefinition.PermissionMode.AUTO,
+                AgentDefinition.parse(Path.of("a.md"), text, true).permissionMode());
+        assertNull(AgentDefinition.parse(Path.of("a.md"), text, false),
+                "工作区里写 auto：整份作废，而不是悄悄降级成 default");
+        assertNull(AgentDefinition.parse(Path.of("a.md"), "---\ndescription: x\npermissionMode: bypassPermissions\n---\n", true),
+                "bypassPermissions 在哪儿都不认");
+    }
+
+    @Test
     @DisplayName("坏定义只作废它自己：没写描述、名字不成形、通配写在 mcp__ 之外（b* 会把 bash 递出去）")
     void badDefinitionsAreDropped() {
         assertNull(AgentDefinition.parse(Path.of("a.md"), "---\nname: a\n---\n正文"));

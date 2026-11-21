@@ -123,9 +123,14 @@ public record AgentDefinition(String name, String description, List<String> tool
         /** 始终只读：只拿得到 plan 模式下的那些工具，不管主对话在不在 plan 模式。 */
         PLAN,
         /** 要问人的操作一律拒绝、不弹框；被规则放行的照常做。适合在后台跑、不该打扰人的子 agent。 */
-        DONT_ASK;
+        DONT_ASK,
+        /**
+         * 照 Claude Code 的 auto：要问人的操作交给自动审查（模型）按用户的意图判，不问人。
+         * 它比问人宽——审查可能放过人会拒的——所以<b>只认家目录里的定义</b>，和内联 MCP 同一条信任边界。
+         */
+        AUTO;
 
-        static PermissionMode parse(String raw) {
+        static PermissionMode parse(String raw, boolean fromHome) {
             if (raw == null || raw.isBlank()) {
                 return DEFAULT;
             }
@@ -133,10 +138,17 @@ public record AgentDefinition(String name, String description, List<String> tool
                 case "default", "manual" -> DEFAULT;
                 case "plan" -> PLAN;
                 case "dontAsk" -> DONT_ASK;
-                case "acceptEdits", "bypassPermissions", "auto" -> throw new IllegalArgumentException(
-                        "permissionMode: " + raw.strip() + " 会放宽权限，不支持（项目目录里的定义不能借它绕过审批）。"
-                                + "只认 default / plan / dontAsk");
-                default -> throw new IllegalArgumentException("permissionMode 只认 default / plan / dontAsk，收到: " + raw);
+                case "auto" -> {
+                    if (!fromHome) {
+                        throw new IllegalArgumentException("permissionMode: auto 比问人宽，只认家目录里的定义"
+                                + "（项目目录里的定义不能借它绕过审批）");
+                    }
+                    yield AUTO;
+                }
+                case "acceptEdits", "bypassPermissions" -> throw new IllegalArgumentException(
+                        "permissionMode: " + raw.strip() + " 会放宽权限，不支持。只认 default / plan / dontAsk / auto");
+                default -> throw new IllegalArgumentException(
+                        "permissionMode 只认 default / plan / dontAsk / auto，收到: " + raw);
             };
         }
     }
@@ -382,7 +394,7 @@ public record AgentDefinition(String name, String description, List<String> tool
                     .source(file.toString())
                     .model(front.get("model"))
                     .maxTurns(turns(front.get("maxturns")))
-                    .permissionMode(PermissionMode.parse(front.get("permissionmode")))
+                    .permissionMode(PermissionMode.parse(front.get("permissionmode"), fromHome))
                     .skills(nameList(front.getOrDefault("skills", "")))
                     .memory(Memory.parse(front.get("memory")))
                     .background(flag("background", front.get("background")))
