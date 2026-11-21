@@ -110,6 +110,22 @@ class ApprovalRulesTest {
     }
 
     @Test
+    @DisplayName("network（沙箱出网）按主机名比，和 browse 一样的匹配；但两种互不通用——批了浏览不等于批了 shell 出网")
+    void networkRulesMatchHosts() {
+        ApprovalRules rules = ApprovalRules.of(
+                List.of(ApprovalRule.of(ApprovalKind.NETWORK, "*.github.com", "d")), List.of());
+        assertEquals(ApprovalRules.Decision.ALLOW,
+                rules.check(ApprovalRequest.network("api.github.com", "x")).decision());
+        assertEquals(ApprovalRules.Decision.ASK,
+                rules.check(ApprovalRequest.network("evil.com", "x")).decision());
+        assertEquals(ApprovalRules.Decision.ASK,
+                rules.check(new ApprovalRequest(ApprovalKind.BROWSE, "浏览", "api.github.com", "", "", null)).decision());
+        assertEquals(ApprovalKind.NETWORK, ApprovalKind.of("network"));
+        assertFalse(RuleSuggester.forRequest(ApprovalRequest.network("api.github.com", "x")).isEmpty(),
+                "「以后都同意」要能存成规则");
+    }
+
+    @Test
     @DisplayName("deny 对安全段照样生效——用户明说不许的，哪怕守卫觉得无害也拒")
     void denyStillAppliesToSafeSegments() {
         ApprovalRules rules = ApprovalRules.of(

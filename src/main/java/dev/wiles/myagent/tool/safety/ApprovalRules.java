@@ -121,6 +121,7 @@ public final class ApprovalRules {
             case BASH -> checkCommand(request.subject());
             case WRITE -> checkOne(ApprovalKind.WRITE, request.subject());
             case BROWSE -> checkOne(ApprovalKind.BROWSE, request.subject());
+            case NETWORK -> checkOne(ApprovalKind.NETWORK, request.subject());
         };
     }
 

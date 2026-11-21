@@ -42,6 +42,11 @@ public record ApprovalRequest(ApprovalKind kind, String action, String subject,
         return new ApprovalRequest(ApprovalKind.BASH, "执行命令", command, reason, "", null);
     }
 
+    /** 沙箱里的命令要连 {@code host}（出网代理问的）。 */
+    public static ApprovalRequest network(String host, String reason) {
+        return new ApprovalRequest(ApprovalKind.NETWORK, "沙箱里的命令要联网", host, reason, "", null);
+    }
+
     public static ApprovalRequest write(String action, String path, String reason, String preview) {
         return new ApprovalRequest(ApprovalKind.WRITE, action, path, reason, preview, null);
     }

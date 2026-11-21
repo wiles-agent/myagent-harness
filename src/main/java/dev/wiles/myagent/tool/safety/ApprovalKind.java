@@ -43,7 +43,13 @@ public enum ApprovalKind {
      *
      * <p>这也是 Claude in Chrome 扩展的做法——权限按站点给、按站点撤。
      */
-    BROWSE("browse");
+    BROWSE("browse"),
+
+    /**
+     * 沙箱里的命令要连某个主机（照 Claude Code 沙箱的出网代理）。subject 是<b>主机名</b>，匹配和 {@link #BROWSE} 一样，
+     * 但两种规则互不通用：批了「在这个站点上操作浏览器」不等于批了「shell 里随便往这个站发东西」。
+     */
+    NETWORK("network");
 
     private final String id;
 
