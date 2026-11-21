@@ -132,7 +132,35 @@ public final class AgentDefinitions {
                 log.warn("列不出 {}: {}", dir, e.getMessage());
             }
         }
-        return of(found);
+        AgentDefinitions loaded = of(found);
+        if (loaded.overDescriptionBudget()) {
+            log.warn("自定义 agent 类型的描述加起来约 {} token，超过 {} 的预算：它们每一轮都跟着 spawn_agent 的说明发出去。"
+                            + "把 description 写短，细节挪进正文（正文只进那个子 agent 自己的系统提示词）",
+                    loaded.customDescriptionTokens(), DESCRIPTION_BUDGET_TOKENS);
+        }
+        return loaded;
+    }
+
+    /**
+     * 自定义类型的描述加起来的预算，照 Claude Code 的 15,000 token。这些描述<b>每一轮</b>都跟着
+     * spawn_agent 的说明发出去，写长了是每一步都要付的税（MCP 工具菜单那笔账算过一次）。
+     * 超了只提醒、不丢定义——丢掉哪一份都是替用户做决定。
+     */
+    public static final int DESCRIPTION_BUDGET_TOKENS = 15_000;
+
+    /** 自定义类型（不含内置的）描述的估算 token 数。 */
+    public int customDescriptionTokens() {
+        int total = 0;
+        for (AgentDefinition d : byName.values()) {
+            if (!"builtin".equals(d.source())) {
+                total += dev.wiles.myagent.context.TokenEstimator.estimate(d.description());
+            }
+        }
+        return total;
+    }
+
+    public boolean overDescriptionBudget() {
+        return customDescriptionTokens() > DESCRIPTION_BUDGET_TOKENS;
     }
 
     public AgentDefinition get(String name) {

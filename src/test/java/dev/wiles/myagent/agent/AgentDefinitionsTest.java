@@ -101,6 +101,27 @@ class AgentDefinitionsTest {
     }
 
     @Test
+    @DisplayName("描述预算：只算自定义类型；超过 15000 token 要报出来，但照样全部加载")
+    void descriptionBudget() {
+        assertEquals(0, AgentDefinitions.builtins().customDescriptionTokens(), "内置的不算");
+        assertFalse(AgentDefinitions.builtins().overDescriptionBudget());
+
+        AgentDefinitions small = AgentDefinitions.of(List.of(
+                new AgentDefinition("a", "查东西", null, List.of(), "", false, "t")));
+        assertTrue(small.customDescriptionTokens() > 0);
+        assertFalse(small.overDescriptionBudget());
+
+        String huge = "用来处理一类非常具体的任务，".repeat(3000);
+        AgentDefinitions big = AgentDefinitions.of(List.of(
+                new AgentDefinition("a", huge, null, List.of(), "", false, "t"),
+                new AgentDefinition("b", huge, null, List.of(), "", false, "t")));
+        assertTrue(big.customDescriptionTokens() > AgentDefinitions.DESCRIPTION_BUDGET_TOKENS);
+        assertTrue(big.overDescriptionBudget());
+        assertNotNull(big.get("a"), "超预算只是提醒，不丢定义");
+        assertNotNull(big.get("b"));
+    }
+
+    @Test
     @DisplayName("写错的工具名报得出来；tools 留空等于继承")
     void unmatchedToolsAreReported() {
         AgentDefinition a = new AgentDefinition("a", "x", List.of("read_file", "reed_file"), List.of(), "", false, "t");

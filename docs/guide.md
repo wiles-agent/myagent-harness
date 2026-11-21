@@ -355,6 +355,8 @@ disallowedTools: bash
   一个 PR 加一份就能让子 agent 绕过审批。写了的话整份定义作废、日志里说明原因。主对话在 plan 模式时，所有子 agent 照旧只读。
 - `skills: deploy, code-review`：派出时把这些技能的正文（连同技能目录）预载进它的系统提示词，省掉它自己去找、去读。
   只管预载，不限制它能调哪些技能；找不到的技能跳过并记一笔。fork 不预载（它和主对话共用系统提示词）。
+- 自定义类型的 `description` 加起来超过约 15000 token 时，启动日志里会报总数（照 Claude Code）：这些描述每一轮都跟着
+  `spawn_agent` 的说明发出去。只提醒、不丢定义；把描述写短，细节挪进正文（正文只进那个子 agent 自己的系统提示词）。
 - `model: <模型名>`：这种子 agent 用的模型，`inherit` 或不写就跟主对话一样。照 Claude Code，这是子 agent 控制成本的那条路：
   查文件、跑测试这类量大但简单的活交给同一个服务上更便宜的模型。实际用哪个模型按这个顺序定：
   派的时候 `spawn_agent` 传的 `model` → 类型定义的 `model` → `MYAGENT_SUBAGENT_MODEL`；
