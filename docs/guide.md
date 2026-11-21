@@ -555,6 +555,35 @@ WebSocket 服务，握手信息（端口 + 一次性 token）打在 stdout。照
    外加工作区里的 `mkdir` / `cp` / `touch`）。**解释器、编译、构建、`npm test` 不算只读**：它们执行的是仓库里随便谁写的代码，
    一次注入就能借它们做任何事。第一次跑 `mvn test` 会问，选「以后都同意」存成 `mvn test *` 就不再问了。
    命令守卫怎么拆命令、剥包装（`timeout`、`nohup`、`env`……）、看重定向，也照 Claude Code 文档的口径。
+4. **沙箱**（照 Claude Code，默认关）—— 见下一节。命令守卫和规则看的是命令文本，`python -c "open('../x','w')"`、
+   `/usr/bin/curl` 这类写法它们看不出来；沙箱不看文本，看进程实际能碰什么。
+
+### 沙箱
+
+照 Claude Code 的沙箱：**操作系统强制**的边界，套在 bash 和 `run_tests` 起的进程外面。读写文件的工具、MCP、hook 不在里面
+（它们有自己的闸）。**默认关**，在 `~/.myagent/settings.json` 里开（只认家目录——仓库能写的设置不能关沙箱、放宽出网），
+或者 `MYAGENT_SANDBOX=on|off` 临时开关：
+
+```json
+{"sandbox": {"enabled": true,
+             "filesystem": {"allowWrite": ["/opt/cache"]},
+             "network": {"allowedDomains": ["github.com", "*.pypi.org"], "deniedDomains": [], "strictAllowlist": false}}}
+```
+
+- **平台**：Linux / WSL2 用 bubblewrap（要装 `bubblewrap` 和 `socat`），macOS 用 Seatbelt（**没在真机上验证过**）。
+  **原生 Windows 不支持**（Claude Code 也一样），要用沙箱就在 WSL2 里跑。开了但用不了时照常在沙箱外跑、照常审批；
+  设 `failIfUnavailable: true` 则启动就停。
+- **文件**：整机可读；只能写工作区、这次命令的临时目录（沙箱里的 `/tmp`，和外面的不是一个）、`allowWrite` 列的目录。
+  `.git/hooks`、`.git/config`、`.myagent`、`.claude`、shell 启动文件这些**在工作区里也只读**——改了它们，沙箱外的东西就会执行沙箱里写的代码。
+  已知局限：本来不存在的受保护路径没东西可挂只读，沙箱里能把它建出来。
+- **网络**：沙箱里没有直通网络的路（单独的网络命名空间），唯一的出口是外面的代理，按**主机名**判：`deniedDomains` 一律拒，
+  `allowedDomains` 放行，都不在的 `strictAllowlist` 下拒，否则问一次（审批类型 `network`：手动模式问人、auto 交给审查、dontAsk 拒）。
+  只认 HTTP 代理协议（HTTPS 走 CONNECT、不解 TLS）；不认代理变量的工具（裸 `ssh`、数据库驱动）连放行的主机也连不上。
+- **审批**：沙箱里的命令**不问人**（auto-allow），但 deny 规则照样拦，auto 下照样过审查；`autoAllow: false` 则照常审批。
+- **沙箱外重跑**：真因为沙箱跑不通时，模型可以带 `dangerously_disable_sandbox: true` 重跑——**哪怕是 `echo` 也要单独批**。
+  `allowUnsandboxedCommands: false` 关掉这条路（参数被忽略）。
+- **验证**：`sh bench/sandbox/run.sh` 在 Linux 容器里用真的 bubblewrap 跑一遍（工作区外写、`.git/hooks`、`/tmp` 隔离、
+  不放行的主机、绕开代理直连、放行的主机、沙箱外重跑），每条 PASS / FAIL。
 
 ### 审批：怎么做到既拦得住又不烦人
 
