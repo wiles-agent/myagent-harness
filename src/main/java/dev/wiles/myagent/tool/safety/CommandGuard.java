@@ -154,7 +154,8 @@ public final class CommandGuard {
 
     /** 参数里出现这些，说明目标在工作区之外。 */
     private static final Pattern OUTSIDE_TARGET = Pattern.compile(
-            "(?:^|\\s)(~|\\$HOME|\\$\\{HOME\\}|/[^\\s]|\\.\\.(?:/|\\s|$))");
+            // 路径前可以有个开引号：rm -rf "../outside" 和不带引号的是同一件事
+            "(?:^|\\s)[\"']?(~|\\$HOME|\\$\\{HOME\\}|/[^\\s]|\\.\\.(?:/|\\s|$|[\"']))");
 
     /** 重定向写到工作区外（/dev/null 除外，它无害且常用）。 */
     private static final Pattern REDIRECT_OUTSIDE = Pattern.compile(
@@ -347,9 +348,18 @@ public final class CommandGuard {
     /**
      * 按分隔符拆段。
      *
-     * <p>故意不解析引号：{@code echo "a; rm -rf /"} 会被切成两段，
-     * 于是引号里的内容也按命令判一次。这会产生误报，但方向是安全的——
-     * 宁可让模型换个写法，也不能放过真的危险命令。
+     * <h3>认引号，照 bash 的规矩</h3>
+     * 以前故意不认引号，宁可误报。安全评测里这代价很实在：{@code python -c "import a; print(1)"}
+     * 被拆出「未知命令 print(1)」要审批，dontAsk 的子 agent 连验证都跑不了。现在：
+     * <ul>
+     *   <li>单引号里什么都不执行，整段是字面量；</li>
+     *   <li>双引号里的 {@code ; | && 换行} 是字面量，<b>但 {@code $( )} 和反引号照样执行</b>——
+     *       它们的内容单独拆成段去查，这是认引号最容易开的口子；</li>
+     *   <li>反斜杠转义的字符是字面量；</li>
+     *   <li>引号或替换没配平，就退回老办法（不认引号、见分隔符就拆）——宁可多拆。</li>
+     * </ul>
+     * 命令替换关上之后，后面的字接回外面那一段：{@code echo "today is $(date)"} 拆成
+     * {@code echo "today is "} 和 {@code date}，而不是剩个孤零零的 {@code "} 被当成未知命令。
      *
      * <h3>为什么是 public</h3>
      * {@link ApprovalRules} 判断「这条命令在不在放行名单里」时，<b>必须用同一个拆段器</b>。
@@ -360,6 +370,124 @@ public final class CommandGuard {
      * <p>共用一份不是为了少写几行，是为了让这个差值<b>恒等于零</b>。
      */
     public static List<String> splitSegments(String command) {
+        List<String> quoted = new QuoteAwareSplitter(command).split();
+        return quoted != null ? quoted : splitIgnoringQuotes(command);
+    }
+
+    /** 一个字一个字走，记着自己在哪层引号 / 命令替换里。没配平返回 null。 */
+    private static final class QuoteAwareSplitter {
+        private static final char TOP = 'T', SUBST = '(', BACKTICK = '`', DOUBLE = '"', SINGLE = '\'';
+
+        private final String s;
+        private final List<String> out = new java.util.ArrayList<>();
+        /** 每层命令替换一个：正在攒的那一段。顶层也算一层。 */
+        private final java.util.Deque<StringBuilder> segments = new java.util.ArrayDeque<>();
+        /** 现在在什么里面：顶层、$( 、反引号、双引号、单引号。 */
+        private final java.util.Deque<Character> context = new java.util.ArrayDeque<>();
+
+        QuoteAwareSplitter(String s) {
+            this.s = s;
+            segments.push(new StringBuilder());
+            context.push(TOP);
+        }
+
+        List<String> split() {
+            int n = s.length();
+            for (int i = 0; i < n; i++) {
+                char c = s.charAt(i);
+                char next = i + 1 < n ? s.charAt(i + 1) : 0;
+                char where = context.peek();
+                if (where == SINGLE) {                      // 单引号里只认关引号，连反斜杠都是字面量
+                    if (c == '\'') {
+                        context.pop();
+                    }
+                    append(c);
+                    continue;
+                }
+                if (c == '\\' && i + 1 < n) {               // 转义：下一个字原样收下
+                    append(c);
+                    append(next);
+                    i++;
+                    continue;
+                }
+                if (c == '$' && next == '(') {              // 双引号里也执行
+                    open(SUBST);
+                    i++;
+                    continue;
+                }
+                if (c == '`') {
+                    if (where == BACKTICK) {
+                        close();
+                    } else {
+                        open(BACKTICK);
+                    }
+                    continue;
+                }
+                if (where == DOUBLE) {
+                    if (c == '"') {
+                        context.pop();
+                    }
+                    append(c);
+                    continue;
+                }
+                // 不在引号里：顶层、$( 里、反引号里
+                if (c == '\'' || c == '"') {
+                    context.push(c);
+                    append(c);
+                } else if (c == ')') {
+                    if (where == SUBST) {
+                        close();
+                    } else {
+                        cut();                              // 顶层的 ) 照老规矩当分隔：(cd a; rm b)
+                    }
+                } else if (c == ';' || c == '|' || c == '\n') {
+                    cut();
+                } else if (c == '&') {
+                    char prev = i > 0 ? s.charAt(i - 1) : 0;
+                    if (next == '&') {
+                        cut();
+                        i++;
+                    } else if (prev == '<' || prev == '>' || next == '>' || Character.isDigit(next)) {
+                        append(c);                          // 2>&1、&>out 里的 & 不是分隔符
+                    } else {
+                        cut();                              // 单个 & 是后台运行，也是一段分界
+                    }
+                } else {
+                    append(c);
+                }
+            }
+            if (context.size() != 1) {
+                return null;                                // 引号或替换没配平
+            }
+            cut();
+            return out;
+        }
+
+        private void append(char c) {
+            segments.peek().append(c);
+        }
+
+        /** 这一段到头了，下一段从这层接着攒。 */
+        private void cut() {
+            out.add(segments.pop().toString());
+            segments.push(new StringBuilder());
+        }
+
+        /** 进一层命令替换：里面的内容是独立的段。 */
+        private void open(char kind) {
+            context.push(kind);
+            segments.push(new StringBuilder());
+        }
+
+        /** 出这层命令替换：它攒的那段交出去，接回外面那一段。 */
+        private void close() {
+            context.pop();
+            out.add(segments.pop().toString());
+        }
+    }
+
+    /** 不认引号、见分隔符就拆。引号没配平时的退路——宁可多拆。 */
+    private static List<String> splitIgnoringQuotes(String command) {
         String normalized = command
                 .replace("&&", "\n").replace("||", "\n")
                 .replace("$(", "\n").replace("`", "\n")
