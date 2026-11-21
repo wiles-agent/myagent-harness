@@ -119,14 +119,8 @@ public record AgentDefinition(String name, String description, List<String> tool
 
     static final Pattern NAME = Pattern.compile("[a-z0-9][a-z0-9_-]{0,63}");
 
-    /**
-     * Claude Code 的工具名到我们的。{@code ~/.claude/agents/} 下现成的定义写的是 {@code Read, Grep}，
-     * 不翻译的话白名单一个都对不上，子 agent 会拿着空菜单出门。
-     */
-    static final Map<String, String> CLAUDE_CODE_NAMES = Map.of(
-            "Read", "read_file", "Write", "write_file", "Edit", "edit_file", "MultiEdit", "edit_file",
-            "Grep", "grep", "Glob", "glob", "Bash", "bash", "LS", "list_dir",
-            "WebFetch", "web_fetch", "WebSearch", "web_search");
+    /** Claude Code 的工具名到我们的，见 {@link dev.wiles.myagent.tool.ClaudeCodeNames}。 */
+    static final Map<String, String> CLAUDE_CODE_NAMES = dev.wiles.myagent.tool.ClaudeCodeNames.TO_OURS;
 
     public AgentDefinition {
         if (name == null || !NAME.matcher(name).matches()) {
