@@ -76,6 +76,11 @@ class AgentDefinitionsTest {
                 AgentDefinition.parse(Path.of("p.md"), "---\ndescription: x\npermissionMode: dontAsk\n---\n").permissionMode());
         assertEquals(AgentDefinition.PermissionMode.DEFAULT,
                 AgentDefinition.parse(Path.of("p.md"), "---\ndescription: x\npermissionMode: manual\n---\n").permissionMode());
+        assertEquals(List.of(), b.skills());
+        assertEquals(List.of("deploy", "code-review"), AgentDefinition.parse(Path.of("s.md"),
+                "---\ndescription: x\nskills: deploy, code-review\n---\n").skills());
+        assertEquals(List.of("deploy", "code-review"), AgentDefinition.parse(Path.of("s.md"),
+                "---\ndescription: x\nskills:\n  - deploy\n  - code-review\n---\n").skills());
         for (String loose : List.of("acceptEdits", "bypassPermissions", "auto", "whatever")) {
             assertNull(AgentDefinition.parse(Path.of("p.md"), "---\ndescription: x\npermissionMode: " + loose + "\n---\n"),
                     loose + " 会放宽权限或不认识，整份作废");

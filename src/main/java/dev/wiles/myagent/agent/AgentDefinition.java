@@ -41,10 +41,12 @@ import java.util.regex.Pattern;
  * @param maxTurns        这种子 agent 一轮最多走几步；0 表示跟会话的默认（{@code MYAGENT_SUBAGENT_STEPS}）。
  *                        照 Claude Code 的 {@code maxTurns}：撞线交回的是 partial，能用 send_input 接着做
  * @param permissionMode  这种子 agent 的权限模式，见 {@link PermissionMode}
+ * @param skills          派出时预载进它系统提示词的技能（按技能 id）。照 Claude Code：只管预载，
+ *                        不限制它能调哪些技能
  */
 public record AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
                               String rules, boolean ownsRequired, String source, String model, int maxTurns,
-                              PermissionMode permissionMode) {
+                              PermissionMode permissionMode, List<String> skills) {
 
     /**
      * 照 Claude Code 的 {@code permissionMode}，但<b>只收收紧的三种</b>。
@@ -110,6 +112,14 @@ public record AgentDefinition(String name, String description, List<String> tool
             throw new IllegalArgumentException(name + " 的 maxTurns 不能是负数: " + maxTurns);
         }
         permissionMode = permissionMode == null ? PermissionMode.DEFAULT : permissionMode;
+        skills = skills == null ? List.of() : List.copyOf(skills);
+    }
+
+    public AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
+                           String rules, boolean ownsRequired, String source, String model, int maxTurns,
+                           PermissionMode permissionMode) {
+        this(name, description, tools, disallowedTools, rules, ownsRequired, source, model, maxTurns,
+                permissionMode, List.of());
     }
 
     public AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
@@ -208,11 +218,24 @@ public record AgentDefinition(String name, String description, List<String> tool
                     parsed.body(),
                     "required".equalsIgnoreCase(front.getOrDefault("owns", "").strip()),
                     file.toString(), front.get("model"), turns(front.get("maxturns")),
-                    PermissionMode.parse(front.get("permissionmode")));
+                    PermissionMode.parse(front.get("permissionmode")),
+                    nameList(front.getOrDefault("skills", "")));
         } catch (IllegalArgumentException e) {
             log.warn("agent 定义 {} 作废: {}", file, e.getMessage());
             return null;
         }
+    }
+
+    /** 技能名单：和工具名单同样的写法（逗号、方括号、YAML 列表都认），但不做工具名翻译。 */
+    static List<String> nameList(String raw) {
+        List<String> out = new ArrayList<>();
+        for (String token : raw.replace("[", " ").replace("]", " ").split("[,\\s]+")) {
+            token = token.strip().replaceAll("^[\"']|[\"']$", "");
+            if (!token.isEmpty() && !token.equals("-")) {
+                out.add(token);
+            }
+        }
+        return out.stream().distinct().toList();
     }
 
     /**

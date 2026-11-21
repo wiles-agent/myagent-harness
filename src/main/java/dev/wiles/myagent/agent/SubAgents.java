@@ -394,6 +394,39 @@ public final class SubAgents implements Mailbox {
         return role.model() != null ? role.model() : settings.model();
     }
 
+    /** 按 id 找技能（{@link #withSkills}）。null 表示这个会话没有技能库，类型定义里的 skills 不预载。 */
+    private volatile java.util.function.Function<String, java.util.Optional<dev.wiles.myagent.skill.Skill>> skills;
+
+    /** 接上技能库：类型定义里列的 {@code skills}，派出时把正文预载进子 agent 的系统提示词。 */
+    public SubAgents withSkills(
+            java.util.function.Function<String, java.util.Optional<dev.wiles.myagent.skill.Skill>> skills) {
+        this.skills = skills;
+        return this;
+    }
+
+    /**
+     * 照 Claude Code 的 {@code skills}：列出的技能整段正文在开工时就进上下文，省掉它自己去找、去读那一步。
+     * 技能目录要一起交代——正文里的 {@code scripts/check.sh} 这类相对路径都是相对技能目录的。找不到的跳过并记一笔。
+     */
+    String preloadedSkills(AgentDefinition role) {
+        var lookup = skills;
+        if (lookup == null || role.skills().isEmpty()) {
+            return "";
+        }
+        StringBuilder out = new StringBuilder();
+        for (String id : role.skills()) {
+            var found = lookup.apply(id);
+            if (found.isEmpty()) {
+                log.warn("agent 类型 {} 要预载的技能 {} 找不到，跳过", role.name(), id);
+                continue;
+            }
+            var skill = found.get();
+            out.append("## 预载的技能：").append(skill.id()).append("\n（技能目录：").append(skill.dir())
+                    .append("，正文里的相对路径都相对这里）\n\n").append(skill.body().strip()).append("\n\n");
+        }
+        return out.toString();
+    }
+
     /** 会话是只读启动的：子 agent 的系统提示词跟主 agent 一样带上只读那段。 */
     public SubAgents withReadOnlyPolicy(boolean readOnly) {
         this.readOnlyPolicy = readOnly;
@@ -1222,7 +1255,8 @@ public final class SubAgents implements Mailbox {
             // 别的类型：自己的系统提示词、筛过的工具、从零开始（照 Claude Code）
             Agent agent = new Agent(model == null ? clients.get() : byModel.apply(model),
                     fork ? forkTools(id) : toolsFor(role, id),
-                    fork ? parentAgent.systemPrompt() : SystemPrompt.forSubagent(root, role, readOnlyPolicy),
+                    fork ? parentAgent.systemPrompt()
+                            : SystemPrompt.forSubagent(root, role, readOnlyPolicy, preloadedSkills(role)),
                     role.maxTurns() > 0 ? role.maxTurns() : settings.childMaxSteps(), contexts.get())
                     .withWritingTools(BuiltinTools.WRITING_TOOLS)
                     .withStepBudget(settings.budget())

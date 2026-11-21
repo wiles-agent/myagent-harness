@@ -81,7 +81,18 @@ public final class SystemPrompt {
      * @param readOnly 整个会话是只读启动的（{@code --readonly}），和主 agent 一样要明说
      */
     public static String forSubagent(Path workspaceRoot, AgentDefinition type, boolean readOnly) {
+        return forSubagent(workspaceRoot, type, readOnly, "");
+    }
+
+    /**
+     * 同上，再在规矩后面接上预载的技能正文（类型定义里的 {@code skills}）。
+     * 技能放在最后：规矩是这类 agent 的身份，技能是它这次可能用得上的说明书。
+     */
+    public static String forSubagent(Path workspaceRoot, AgentDefinition type, boolean readOnly, String preloaded) {
         String rules = type.rules().isBlank() ? "" : "\n## 「" + type.name() + "」的规矩\n\n" + type.rules() + "\n";
+        if (preloaded != null && !preloaded.isBlank()) {
+            rules = rules + "\n" + preloaded.strip() + "\n";
+        }
         return ASSEMBLER.assemble(PromptMode.SUBAGENT, PromptContext.builder()
                 .variable("workspace", String.valueOf(workspaceRoot))
                 .variable("agentType", type.name())

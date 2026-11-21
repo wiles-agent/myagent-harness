@@ -288,7 +288,8 @@ public final class AgentServer extends WebSocketServer {
             subagents.readOnlyWhen(planMode::on)
                     .withDefinitions(dev.wiles.myagent.agent.AgentDefinitions.load(workspace.root()))
                     .withReadOnlyPolicy(options.readOnly())
-                    .withModelClients(model -> meter.meter(new DeepSeekClient(config.withModel(model))));
+                    .withModelClients(model -> meter.meter(new DeepSeekClient(config.withModel(model))))
+                    .withSkills(this::findSkill);   // 技能库在下面才加载；派的时候才查，那时已经有了
         }
         // plan 模式的两个工具。只读启动时不接：那时什么都改不了，没有「先规划再动手」这回事
         if (!options.readOnly()) {
@@ -365,6 +366,11 @@ public final class AgentServer extends WebSocketServer {
      * 造一个客户端。<b>一律经过电表</b>——主循环、压缩、后台预压缩、规划器、
      * 每个子任务的执行体都走这一个入口，包在这儿就漏不掉账。
      */
+    /** 给子 agent 预载技能用。走方法而不是 lambda 里直接读字段：构造函数里那个 final 字段这时还没赋值。 */
+    private java.util.Optional<dev.wiles.myagent.skill.Skill> findSkill(String id) {
+        return skills == null ? java.util.Optional.empty() : skills.find(id);
+    }
+
     private LlmClient newClient() {
         return meter.meter(new DeepSeekClient(config));
     }

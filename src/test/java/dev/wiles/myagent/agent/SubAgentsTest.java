@@ -450,6 +450,32 @@ class SubAgentsTest {
     }
 
     @Test
+    @DisplayName("skills：类型定义里列的技能，正文和目录预载进子 agent 的系统提示词；找不到的跳过；fork 不预载")
+    void skillsArePreloadedIntoTheChild() throws Exception {
+        Script child = new Script().reply("按技能做完了");
+        Script fork = new Script().reply("分身做完了");
+        Rig rig = new Rig(child, fork);
+        var deploy = new dev.wiles.myagent.skill.Skill("deploy", "deploy", "发版流程",
+                "先跑 scripts/check.sh，再打 tag。", java.nio.file.Path.of("/skills/deploy"), Map.of());
+        rig.subagents.withSkills(id -> "deploy".equals(id) ? java.util.Optional.of(deploy) : java.util.Optional.empty())
+                .withDefinitions(AgentDefinitions.of(List.of(
+                        new AgentDefinition("releaser", "发版", null, List.of(), "照流程来", false, "t", null, 0,
+                                AgentDefinition.PermissionMode.DEFAULT, List.of("deploy", "missing")))));
+
+        rig.spawn(Map.of("message", "发 1.2", "agent_type", "releaser"));
+        awaitIdle(rig.subagents);
+        String system = child.seen.get(0).get(0).content();
+        assertTrue(system.contains("先跑 scripts/check.sh，再打 tag。"), system);
+        assertTrue(system.contains(deploy.dir().toString()), "相对路径都相对技能目录，目录要交代");
+        assertTrue(system.indexOf("照流程来") < system.indexOf("先跑 scripts/check.sh"), "规矩在前、技能在后");
+        assertFalse(system.contains("missing"), "找不到的技能不进提示词");
+
+        rig.spawn(Map.of("message", "接着", "agent_type", "fork"));
+        awaitIdle(rig.subagents);
+        assertEquals("SYSTEM-PROMPT", fork.seen.get(0).get(0).content(), "fork 和主对话共用系统提示词，不预载");
+    }
+
+    @Test
     @DisplayName("permissionMode：plan 类型始终只有只读工具（主对话不在 plan 也一样）；dontAsk 类型的调用带着「别问人」的标记")
     void permissionModeShapesTheChild() throws Exception {
         List<String> flags = new CopyOnWriteArrayList<>();
