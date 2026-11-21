@@ -296,6 +296,8 @@ public final class SubAgents implements Mailbox {
         GitWorktree worktree;
         /** permissionMode: auto 时替人审它的操作；否则 null。 */
         dev.wiles.myagent.tool.safety.AutoReviewer reviewer;
+        /** 这一轮交回前自动审查复核出的问题；没有就是 null。 */
+        volatile String handoffWarning;
 
         // ---- 框架看到的事实（写进通知，不靠它自己说） ----
         /** 写文件工具成功写过的路径。bash 里写的看不到。 */
@@ -1020,7 +1022,9 @@ public final class SubAgents implements Mailbox {
         ApprovalOrigin who = originOf(child);
         Thread worker = new Thread(() -> {
             // 这条线程（和它为每次工具调用新开的线程）要的审批，都标明是这个子 agent，见 ApprovalScope
-            ApprovalScope.set(who, child.role.permissionMode() == AgentDefinition.PermissionMode.DONT_ASK,
+            // 有审查器就按 auto 走（继承来的 auto 压过定义里的 dontAsk）
+            ApprovalScope.set(who, child.reviewer == null
+                            && child.role.permissionMode() == AgentDefinition.PermissionMode.DONT_ASK,
                     child.reviewer);
             String text = null;
             Throwable error = null;
@@ -1030,6 +1034,9 @@ public final class SubAgents implements Mailbox {
                 error = t;
                 log.error("子 agent {} 炸了", child.id, t);
             }
+            // auto 下交回之前复核一次它做过的事和报告（照 Claude Code）：只警告，不丢结果。锁外做，要调模型
+            child.handoffWarning = child.reviewer != null && error == null && text != null
+                    ? child.reviewer.reviewHandoff(text) : null;
             finished(child, text, error);
         }, child.id);
         worker.setDaemon(true);
@@ -1193,10 +1200,19 @@ public final class SubAgents implements Mailbox {
             case RUNNING -> JSON.getNodeFactory().textNode("running");
             case INTERRUPTED -> JSON.getNodeFactory().textNode("interrupted");
             case SHUTDOWN -> JSON.getNodeFactory().textNode("shutdown");
-            case COMPLETED -> JSON.createObjectNode().put("completed", clip(child.result));
-            case PARTIAL -> JSON.createObjectNode().put("partial", clip(child.result));
+            case COMPLETED -> withWarning(JSON.createObjectNode().put("completed", clip(child.result)), child);
+            case PARTIAL -> withWarning(JSON.createObjectNode().put("partial", clip(child.result)), child);
             case ERRORED -> JSON.createObjectNode().put("errored", clip(child.result));
         };
+    }
+
+    /** 自动审查复核出问题时，警告和结果放在一起交回（照 Claude Code：警告加在前面，结果不丢）。 */
+    private static ObjectNode withWarning(ObjectNode status, Child child) {
+        String warning = child.handoffWarning;
+        if (warning != null) {
+            status.put("review_warning", warning);
+        }
+        return status;
     }
 
     private static boolean isFinal(Child child) {
@@ -1757,7 +1773,18 @@ public final class SubAgents implements Mailbox {
             boolean fork = role == AgentDefinitions.FORK;
             // fork：系统提示词、工具、历史都和主对话一样，前缀缓存整段命中；
             // 别的类型：自己的系统提示词、筛过的工具、从零开始（照 Claude Code）
-            boolean auto = !fork && role.permissionMode() == AgentDefinition.PermissionMode.AUTO;
+            // 派它的这条线程在 auto 下（主会话开了 auto，或者它自己就是 auto 的子 agent）：
+            // 照 Claude Code，子 agent 跟着进 auto，定义里写的 default / dontAsk 不算数；plan 照旧只读（更严的方向）
+            dev.wiles.myagent.tool.safety.AutoReviewer parentReviewer = ApprovalScope.autoReviewer();
+            boolean auto = (!fork && role.permissionMode() == AgentDefinition.PermissionMode.AUTO)
+                    || (parentReviewer != null && role.permissionMode() != AgentDefinition.PermissionMode.PLAN);
+            if (parentReviewer != null) {
+                // 派出前审一次（照 Claude Code）：派出是 agent 自己的选择，这时候还认得出来，能拒
+                dev.wiles.myagent.tool.safety.ApprovalVerdict verdict = parentReviewer.reviewDelegation(role.name(), message);
+                if (verdict != null && !verdict.approved()) {
+                    return ToolResult.error(verdict.deniedMessage("自动审查不让派这个子 agent。"));
+                }
+            }
             if (auto && autoReviewers == null) {
                 // 不能悄悄降级：降成问人，后台的它会卡住等人；降成放行，就是绕过了审批
                 return ToolResult.error("这个会话没接自动审查，" + role.name() + "（permissionMode: auto）派不出去。换一种类型派");

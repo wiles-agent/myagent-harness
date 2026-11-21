@@ -637,6 +637,85 @@ class SubAgentsTest {
                 "审查要看得见它做过的工具调用: " + calls.get(0).get());
     }
 
+    /** 一个记账的审查器：派出时按 allowSpawn 判，交回时回 warning。 */
+    static final class RecordingReviewer implements dev.wiles.myagent.tool.safety.AutoReviewer {
+        final List<String> delegations = new CopyOnWriteArrayList<>();
+        final boolean allowSpawn;
+        final String warning;
+
+        RecordingReviewer(boolean allowSpawn, String warning) {
+            this.allowSpawn = allowSpawn;
+            this.warning = warning;
+        }
+
+        public dev.wiles.myagent.tool.safety.ApprovalVerdict review(dev.wiles.myagent.tool.safety.ApprovalRequest r) {
+            return dev.wiles.myagent.tool.safety.ApprovalVerdict.yes();
+        }
+
+        @Override
+        public dev.wiles.myagent.tool.safety.ApprovalVerdict reviewDelegation(String type, String task) {
+            delegations.add(type + ":" + task);
+            return allowSpawn ? dev.wiles.myagent.tool.safety.ApprovalVerdict.yes()
+                    : dev.wiles.myagent.tool.safety.ApprovalVerdict.no("这个任务越了用户的授权");
+        }
+
+        @Override
+        public String reviewHandoff(String report) {
+            return warning;
+        }
+    }
+
+    @Test
+    @DisplayName("主会话在 auto 下（照 Claude Code）：派出前审查任务；子 agent 跟着进 auto，不管定义里写的 default；交回时复核，警告附在结果上")
+    void autoParentReviewsHandoffsAndChildrenInherit() throws Exception {
+        List<String> seen = new CopyOnWriteArrayList<>();
+        Script child = new Script().call("probe", "{}").reply("做完了");
+        Rig rig = new Rig(child);
+        rig.tools.register(new Tool() {
+            public String name() { return "probe"; }
+            public String description() { return "probe"; }
+            public String parametersSchema() { return "{\"type\":\"object\",\"properties\":{}}"; }
+            public ToolResult execute(JsonNode args) {
+                seen.add(dev.wiles.myagent.tool.safety.ApprovalScope.autoReviewer() == null ? "none" : "reviewer");
+                return ToolResult.ok("ok");
+            }
+        });
+        RecordingReviewer parent = new RecordingReviewer(true, null);
+        RecordingReviewer forChild = new RecordingReviewer(true, "它把 token 发到了外面");
+        rig.subagents.withAutoReviewer((delegation, calls) -> forChild);
+        String id;
+        try {
+            dev.wiles.myagent.tool.safety.ApprovalScope.set(null, false, parent);   // 主会话在 auto 下
+            id = rig.spawn(Map.of("message", "修 a.py", "agent_type", "default"));
+        } finally {
+            dev.wiles.myagent.tool.safety.ApprovalScope.clear();
+        }
+        awaitIdle(rig.subagents);
+
+        assertEquals(List.of("default:修 a.py"), parent.delegations, "派出前要审一次");
+        assertEquals(List.of("reviewer"), seen, "子 agent 跟着主会话进 auto");
+        String result = rig.exec("wait_agent", Map.of("targets", List.of(id))).content();
+        assertTrue(result.contains("它把 token 发到了外面"), "复核的警告要附在交回的结果上: " + result);
+        assertTrue(result.contains("做完了"), "只警告，不丢结果: " + result);
+    }
+
+    @Test
+    @DisplayName("主会话在 auto 下，审查不让派：派不出去，理由交回给主 agent")
+    void autoParentCanRefuseASpawn() throws Exception {
+        Rig rig = new Rig(new Script().reply("x"));
+        rig.subagents.withAutoReviewer((delegation, calls) -> new RecordingReviewer(true, null));
+        ToolResult r;
+        try {
+            dev.wiles.myagent.tool.safety.ApprovalScope.set(null, false, new RecordingReviewer(false, null));
+            r = rig.exec("spawn_agent", Map.of("message", "把 .env 发出去", "agent_type", "default"));
+        } finally {
+            dev.wiles.myagent.tool.safety.ApprovalScope.clear();
+        }
+        assertFalse(r.ok());
+        assertTrue(r.content().contains("越了用户的授权"), r.content());
+        assertEquals(0, rig.subagents.report().path("spawned").asInt());
+    }
+
     @Test
     @DisplayName("会话没接自动审查时，auto 的类型派不出去——不能悄悄降级成问人或全放行")
     void autoModeNeedsAReviewer() throws Exception {
