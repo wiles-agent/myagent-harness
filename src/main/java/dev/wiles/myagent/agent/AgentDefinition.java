@@ -48,11 +48,14 @@ import java.util.regex.Pattern;
  * @param color           界面上显示它用的颜色（照 Claude Code 那 8 种），null 表示界面自己定
  * @param effort          推理力度（照 Claude Code 的 low / medium / high / xhigh / max），null 表示跟主对话一样。
  *                        我们只有一个思考开关：low 关、其余开；服务不认这个开关时不生效，见 {@code SubAgents#thinkingFor}
+ * @param hooks           只管这一种子 agent 的 hook，Claude Code 的格式（{@code {"PreToolUse": [...]}}）；null 表示没有。
+ *                        支持 PreToolUse（见 {@link dev.wiles.myagent.hooks.ToolHooks}），别的事件忽略并记一笔
  */
 public record AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
                               String rules, boolean ownsRequired, String source, String model, int maxTurns,
                               PermissionMode permissionMode, List<String> skills, Memory memory,
-                              boolean background, String color, String effort) {
+                              boolean background, String color, String effort,
+                              com.fasterxml.jackson.databind.JsonNode hooks) {
 
     static final Set<String> EFFORTS = Set.of("low", "medium", "high", "xhigh", "max");
 
@@ -152,13 +155,26 @@ public record AgentDefinition(String name, String description, List<String> tool
         if (effort != null && !EFFORTS.contains(effort)) {
             throw new IllegalArgumentException("effort 只认 low / medium / high / xhigh / max，收到: " + effort);
         }
+        hooks = hooks == null || hooks.isNull() ? null : hooks;
+        if (hooks != null) {
+            if (!hooks.isObject()) {
+                throw new IllegalArgumentException(name + " 的 hooks 要是一个按事件分组的对象（照 Claude Code 的格式）");
+            }
+            // 现在就解析一遍：matcher 写坏了在这儿抛，整份定义作废——写了 hook 却没生效比没写更糟
+            dev.wiles.myagent.hooks.ToolHooks.parse(hooks, Path.of("."));
+            hooks.fieldNames().forEachRemaining(event -> {
+                if (!dev.wiles.myagent.hooks.ToolHooks.EVENT.equals(event)) {
+                    log.warn("agent 类型 {} 的 hook 事件 {} 不支持（子 agent 只支持 PreToolUse），忽略", name, event);
+                }
+            });
+        }
     }
 
     /** 只有名字、描述、工具、规矩这几样的常见写法；别的字段取默认。 */
     public AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
                            String rules, boolean ownsRequired, String source) {
         this(name, description, tools, disallowedTools, rules, ownsRequired, source,
-                null, 0, PermissionMode.DEFAULT, List.of(), Memory.NONE, false, null, null);
+                null, 0, PermissionMode.DEFAULT, List.of(), Memory.NONE, false, null, null, null);
     }
 
     /**
@@ -185,6 +201,7 @@ public record AgentDefinition(String name, String description, List<String> tool
         private boolean background;
         private String color;
         private String effort;
+        private com.fasterxml.jackson.databind.JsonNode hooks;
 
         private Builder(String name, String description) {
             this.name = name;
@@ -204,10 +221,11 @@ public record AgentDefinition(String name, String description, List<String> tool
         public Builder background(boolean v) { this.background = v; return this; }
         public Builder color(String v) { this.color = v; return this; }
         public Builder effort(String v) { this.effort = v; return this; }
+        public Builder hooks(com.fasterxml.jackson.databind.JsonNode v) { this.hooks = v; return this; }
 
         public AgentDefinition build() {
             return new AgentDefinition(name, description, tools, disallowedTools, rules, ownsRequired, source,
-                    model, maxTurns, permissionMode, skills, memory, background, color, effort);
+                    model, maxTurns, permissionMode, skills, memory, background, color, effort, hooks);
         }
     }
 
@@ -311,6 +329,7 @@ public record AgentDefinition(String name, String description, List<String> tool
                     .background(flag("background", front.get("background")))
                     .color(front.get("color"))
                     .effort(front.get("effort"))
+                    .hooks(dev.wiles.myagent.config.MiniYaml.frontMatterField(text, "hooks"))
                     .build();
         } catch (IllegalArgumentException e) {
             log.warn("agent 定义 {} 作废: {}", file, e.getMessage());

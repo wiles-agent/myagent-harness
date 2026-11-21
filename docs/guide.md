@@ -365,6 +365,12 @@ disallowedTools: bash
 - `effort: low | medium | high | xhigh | max`：推理力度（照 Claude Code）。我们只有一个思考开关，所以是有损映射：
   `low` 关思考，其余开。**只在会话自己配过 `thinking` 时生效**（说明服务认这个开关）；没配就忽略——
   DeepSeek 官方接口不认这个字段，乱发会 400。fork 不受影响，和主对话一模一样。
+- `hooks`：只管这一种子 agent 的 hook，格式照 Claude Code（嵌套 YAML 或一行 JSON 都认）。支持 `PreToolUse`：
+  `matcher` 是正则，`Bash`、`Edit|Write` 这种 Claude Code 的叫法和我们的工具名都认；工具调用前跑命令，
+  stdin 收到 `tool_name` / `tool_input`，退出码 2 拦下（stderr 是给模型的理由），stdout 的 `permissionDecision: deny` 也拦。
+  `tools` 名单只能整个给或不给，「bash 能用但只许跑只读 SQL」这种细一层的规矩靠它（Claude Code 文档里 db-reader 的做法）。
+  别的事件忽略并记一笔；`matcher` 写坏了整份定义作废。hook 是会执行的命令，和工作区 `.myagent/settings.json` 里的
+  hook 同一个信任边界：信任这个目录就是信任它的配置。
 - 自定义类型的 `description` 加起来超过约 15000 token 时，启动日志里会报总数（照 Claude Code）：这些描述每一轮都跟着
   `spawn_agent` 的说明发出去。只提醒、不丢定义；把描述写短，细节挪进正文（正文只进那个子 agent 自己的系统提示词）。
 - `model: <模型名>`：这种子 agent 用的模型，`inherit` 或不写就跟主对话一样。照 Claude Code，这是子 agent 控制成本的那条路：

@@ -76,6 +76,22 @@ class AgentDefinitionsTest {
                 AgentDefinition.parse(Path.of("p.md"), "---\ndescription: x\npermissionMode: dontAsk\n---\n").permissionMode());
         assertEquals(AgentDefinition.PermissionMode.DEFAULT,
                 AgentDefinition.parse(Path.of("p.md"), "---\ndescription: x\npermissionMode: manual\n---\n").permissionMode());
+        assertNull(b.hooks());
+        AgentDefinition hooked = AgentDefinition.parse(Path.of("h.md"), """
+                ---
+                description: 只读查库
+                hooks:
+                  PreToolUse:
+                    - matcher: "Bash"
+                      hooks:
+                        - type: command
+                          command: "./scripts/validate-readonly-query.sh"
+                ---
+                """);
+        assertEquals("Bash", hooked.hooks().path("PreToolUse").get(0).path("matcher").asText());
+        assertNull(AgentDefinition.parse(Path.of("h.md"),
+                        "---\ndescription: x\nhooks:\n  PreToolUse:\n    - matcher: \"(\"\n      hooks:\n        - command: x\n---\n"),
+                "matcher 写坏了：写了 hook 却不生效比没写更糟，整份作废");
         assertNull(b.effort());
         for (String e : List.of("low", "medium", "high", "xhigh", "max")) {
             assertEquals(e, AgentDefinition.parse(Path.of("e.md"), "---\ndescription: x\neffort: " + e + "\n---\n").effort());

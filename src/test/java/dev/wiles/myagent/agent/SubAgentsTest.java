@@ -125,11 +125,17 @@ class SubAgentsTest {
         }
 
         Rig(SubAgents.Mode mode, int parentMaxSteps, SubAgents.Settings settings, Script... childScripts) {
+            this(ROOT, mode, parentMaxSteps, settings, childScripts);
+        }
+
+        /** 要真的在工作区里起进程（hook）时，传一个存在的目录；别的用例用不存在的 {@link #ROOT} 就够了。 */
+        Rig(java.nio.file.Path root, SubAgents.Mode mode, int parentMaxSteps, SubAgents.Settings settings,
+            Script... childScripts) {
             children.addAll(List.of(childScripts));
             subagents = new SubAgents(() -> {
                 Script next = children.poll();
                 return next == null ? new Script() : next;
-            }, tools, ROOT, ContextManager::new, settings, mode, (id, e) -> eventIds.add(id));
+            }, tools, root, ContextManager::new, settings, mode, (id, e) -> eventIds.add(id));
             tools.registerAll(subagents.tools());
             parent = new Agent(parentLlm, tools, "SYSTEM-PROMPT", parentMaxSteps)
                     .withStepBudget(settings.budget());
@@ -447,6 +453,43 @@ class SubAgentsTest {
         awaitIdle(rig.subagents);
         assertEquals(List.of("read_file", "write_file", "bash"), worker.menus.get(0));
         assertEquals(List.of("read_file"), worker.menus.get(1));
+    }
+
+    @Test
+    @DisplayName("hooks：类型定义里的 PreToolUse 只管这一种子 agent——对上的工具调用前跑，拦下时工具不执行、理由回给模型")
+    void preToolUseHooksGuardTheChild(@org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
+        List<String> ran = new CopyOnWriteArrayList<>();
+        Tool bash = new Tool() {
+            public String name() { return "bash"; }
+            public String description() { return "bash"; }
+            public String parametersSchema() { return "{\"type\":\"object\",\"properties\":{}}"; }
+            public ToolResult execute(JsonNode args) {
+                ran.add(args.path("command").asText());
+                return ToolResult.ok("退出码: 0");
+            }
+        };
+        Script child = new Script()
+                .call("bash", "{\"command\": \"psql -c 'DROP TABLE users'\"}")
+                .call("bash", "{\"command\": \"psql -c 'SELECT 1'\"}")
+                .reply("查完了");
+        Script plain = new Script().call("bash", "{\"command\": \"psql -c 'DROP TABLE x'\"}").reply("ok");
+        Rig rig = new Rig(workspace, SubAgents.Mode.ON, 0, SubAgents.Settings.defaults(0), child, plain);
+        rig.tools.replace(bash);
+        JsonNode hooks = M.readTree("""
+                {"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command",
+                  "command": "input=$(cat); case \\"$input\\" in *DROP*) echo '只许查，不许改库' >&2; exit 2;; esac; exit 0"}]}]}""");
+        rig.subagents.withDefinitions(AgentDefinitions.of(List.of(
+                AgentDefinition.builder("db-reader", "只读查库").source("t").hooks(hooks).build())));
+
+        rig.spawn(Map.of("message", "查", "agent_type", "db-reader"));
+        awaitIdle(rig.subagents);
+        assertEquals(List.of("psql -c 'SELECT 1'"), ran, "被拦下的那条不该真的执行");
+        String refused = child.seen.get(1).get(child.seen.get(1).size() - 1).content();
+        assertTrue(refused.contains("只许查，不许改库"), refused);
+
+        rig.spawn(Map.of("message", "查", "agent_type", "default"));     // 没挂 hook 的类型不受影响
+        awaitIdle(rig.subagents);
+        assertEquals(List.of("psql -c 'SELECT 1'", "psql -c 'DROP TABLE x'"), ran);
     }
 
     @Test

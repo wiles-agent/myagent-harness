@@ -1074,6 +1074,15 @@ public final class SubAgents implements Mailbox {
         if (narrowed.get(ToolSearchTool.NAME) != null) {
             narrowed.replace(new ToolSearchTool(narrowed));
         }
+        // 类型定义里的 PreToolUse hook：只管这一种子 agent，每个工具调用前先问一遍
+        if (role.hooks() != null) {
+            dev.wiles.myagent.hooks.ToolHooks guard = dev.wiles.myagent.hooks.ToolHooks.parse(role.hooks(), root);
+            if (!guard.isEmpty()) {
+                for (Tool tool : List.copyOf(narrowed.all())) {
+                    narrowed.replace(new Hooked(tool, guard));
+                }
+            }
+        }
         return narrowed;
     }
 
@@ -1093,6 +1102,38 @@ public final class SubAgents implements Mailbox {
             same.replace(new ToolSearchTool(same));
         }
         return same;
+    }
+
+    /** 外表和原工具一样，执行前先过这种子 agent 的 PreToolUse hook。 */
+    private record Hooked(Tool inner, dev.wiles.myagent.hooks.ToolHooks guard) implements Tool {
+        @Override
+        public String name() {
+            return inner.name();
+        }
+
+        @Override
+        public String description() {
+            return inner.description();
+        }
+
+        @Override
+        public String parametersSchema() {
+            return inner.parametersSchema();
+        }
+
+        @Override
+        public boolean parallelSafe() {
+            return inner.parallelSafe();
+        }
+
+        @Override
+        public ToolResult execute(JsonNode args) {
+            var decision = guard.check(inner.name(), args == null ? "{}" : args.toString());
+            if (decision.blocked()) {
+                return ToolResult.error("被这个子 agent 的 PreToolUse hook 拦下了: " + decision.reason());
+            }
+            return inner.execute(args);
+        }
     }
 
     /** 外表和原工具一样、调了就拒绝。 */
