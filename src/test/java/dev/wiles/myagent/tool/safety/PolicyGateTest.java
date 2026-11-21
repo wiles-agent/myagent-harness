@@ -165,4 +165,27 @@ class PolicyGateTest {
         Files.setLastModifiedTime(file,
                 java.nio.file.attribute.FileTime.fromMillis(System.currentTimeMillis() + 5_000));
     }
+
+    @Test
+    @DisplayName("auto 下丢掉等于任意代码执行的宽泛规则（照 Claude Code）：python * 不再替审查做主，mvn test 这种窄的照留")
+    void autoModeDropsArbitraryCodeRules() {
+        store().save(ApprovalRules.of(List.of(
+                ApprovalRule.of(ApprovalKind.BASH, "python *", "d"),
+                ApprovalRule.of(ApprovalKind.BASH, "npm run *", "d"),
+                ApprovalRule.of(ApprovalKind.BASH, "mvn test *", "d"),
+                ApprovalRule.of(ApprovalKind.BASH, "python test_calc.py", "d")), List.of()));
+        PolicyGate gate = new PolicyGate(human(ApprovalVerdict.no()), store());
+        try {
+            ApprovalScope.set(null, false, request -> ApprovalVerdict.no("审查拦下"));
+            assertFalse(gate.decide(ApprovalRequest.bash("python -c 'import os'", "")).approved(),
+                    "python * 在 auto 下不算数，要过下一层");
+            assertFalse(gate.decide(ApprovalRequest.bash("npm run deploy", "")).approved());
+            assertTrue(gate.decide(ApprovalRequest.bash("mvn test -q", "")).approved(), "窄规则照留");
+            assertTrue(gate.decide(ApprovalRequest.bash("python test_calc.py", "")).approved(), "精确的照留");
+        } finally {
+            ApprovalScope.clear();
+        }
+        assertTrue(gate.decide(ApprovalRequest.bash("python -c 'import os'", "")).approved(),
+                "不在 auto 下，用户的规则照常生效");
+    }
 }

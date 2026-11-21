@@ -46,10 +46,31 @@ public final class ApprovalScope {
         }
     }
 
+    /**
+     * 同上，再带一个自动审查（子 agent 的 permissionMode: auto）。不为 null 时，这条线程上
+     * 要问人的操作交给它判，见 {@link AutoReviewGate}。
+     */
+    public static void set(ApprovalOrigin who, boolean dontAsk, AutoReviewer reviewer) {
+        set(who, dontAsk);
+        if (reviewer == null) {
+            AUTO.remove();
+        } else {
+            AUTO.set(reviewer);
+        }
+    }
+
     public static void clear() {
         CURRENT.remove();
         DONT_ASK.remove();
+        AUTO.remove();
     }
+
+    /** 这条线程上的自动审查；不在 auto 下是 null。 */
+    public static AutoReviewer autoReviewer() {
+        return AUTO.get();
+    }
+
+    private static final InheritableThreadLocal<AutoReviewer> AUTO = new InheritableThreadLocal<>();
 
     /** 这条线程上要问人的操作是不是一律拒绝。 */
     public static boolean dontAsk() {

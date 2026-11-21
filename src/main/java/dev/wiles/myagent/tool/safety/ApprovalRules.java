@@ -124,6 +124,42 @@ public final class ApprovalRules {
         };
     }
 
+    /** 解释器和能跑任意代码的启动器：python * 这种规则等于「跑什么代码都行」。 */
+    private static final java.util.Set<String> ARBITRARY_CODE_RUNNERS = java.util.Set.of(
+            "python", "python3", "node", "ruby", "perl", "php", "sh", "bash", "zsh", "deno", "bun",
+            "java", "npx", "pnpx", "bunx", "uvx", "eval", "exec", "xargs");
+
+    /** 包管理器的「跑脚本」子命令：npm run * 跑的是 package.json 里随便谁写的脚本。 */
+    private static final java.util.Set<String> PACKAGE_RUNNERS = java.util.Set.of(
+            "npm", "pnpm", "yarn", "bun", "uv", "poetry", "pipenv", "make", "gradle", "mvn");
+
+    /**
+     * 去掉等于任意代码执行的宽泛放行规则，auto 下用（照 Claude Code：进 auto 时丢掉
+     * blanket shell、通配的解释器、包管理器的 run——窄的规则如 {@code mvn test *} 照留）。
+     * 和 Claude Code 一样，这张表是尽力而为，不可能列全。
+     */
+    public ApprovalRules withoutArbitraryCodeAllows() {
+        List<ApprovalRule> kept = allow.stream().filter(r -> !grantsArbitraryCode(r)).toList();
+        return kept.size() == allow.size() ? this : new ApprovalRules(kept, deny);
+    }
+
+    private static boolean grantsArbitraryCode(ApprovalRule rule) {
+        if (rule.kind() != ApprovalKind.BASH) {
+            return false;
+        }
+        List<String> t = List.of(rule.match().trim().split("\\s+"));
+        if (t.isEmpty() || !"*".equals(t.get(t.size() - 1))) {
+            return false;                       // 没有结尾通配就是一条具体命令，留着
+        }
+        String first = t.get(0);
+        if (t.size() == 1 || ARBITRARY_CODE_RUNNERS.contains(first)) {
+            return true;                        // `*`、`python *`、`bash *`
+        }
+        // `npm run *`、`make *`、`uv run *`：跑的是脚本文件里随便谁写的命令
+        return PACKAGE_RUNNERS.contains(first)
+                && (t.size() == 2 || "run".equals(t.get(1)) || "exec".equals(t.get(1)));
+    }
+
     /** 判「这一段命令守卫会不会放行」用。守卫没有状态，共用一个。 */
     private static final CommandGuard GUARD = new CommandGuard();
 

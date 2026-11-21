@@ -55,7 +55,9 @@ public final class PolicyGate implements ApprovalPolicy {
     public ApprovalVerdict decide(ApprovalRequest request) {
         reloadIfChanged();
 
-        ApprovalRules current = rules;
+        // auto 下丢掉等于任意代码执行的宽泛放行规则（照 Claude Code）：不然最危险的命令
+        // 被 python * 之类的规则直接放行，审查根本看不到
+        ApprovalRules current = ApprovalScope.autoReviewer() != null ? rules.withoutArbitraryCodeAllows() : rules;
         ApprovalRules.Outcome outcome = current.check(request);
         switch (outcome.decision()) {
             case DENY -> {
