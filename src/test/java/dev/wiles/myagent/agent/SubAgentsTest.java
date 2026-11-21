@@ -450,6 +450,43 @@ class SubAgentsTest {
     }
 
     @Test
+    @DisplayName("permissionMode：plan 类型始终只有只读工具（主对话不在 plan 也一样）；dontAsk 类型的调用带着「别问人」的标记")
+    void permissionModeShapesTheChild() throws Exception {
+        List<String> flags = new CopyOnWriteArrayList<>();
+        Tool probe = new Tool() {
+            public String name() { return "bash"; }
+            public String description() { return "bash"; }
+            public String parametersSchema() { return "{\"type\":\"object\",\"properties\":{}}"; }
+            public ToolResult execute(JsonNode args) {
+                flags.add(String.valueOf(dev.wiles.myagent.tool.safety.ApprovalScope.dontAsk()));
+                return ToolResult.ok("退出码: 0");
+            }
+        };
+        Script planner = new Script().reply("看完了");
+        Script quiet = new Script().call("bash", "{}").reply("跑完了");
+        Rig rig = new Rig(planner, quiet);
+        rig.tools.replace(probe);
+        rig.subagents.withDefinitions(AgentDefinitions.of(List.of(
+                new AgentDefinition("planner", "只看", null, List.of(), "", false, "t", null, 0,
+                        AgentDefinition.PermissionMode.PLAN),
+                new AgentDefinition("quiet", "后台跑", null, List.of(), "", false, "t", null, 0,
+                        AgentDefinition.PermissionMode.DONT_ASK))));
+
+        String desc = rig.subagents.spawnDescription();
+        assertTrue(desc.contains("- planner：只看（只读）"), desc);
+        assertTrue(desc.contains("- quiet：后台跑（不问人"), desc);
+
+        rig.spawn(Map.of("message", "看", "agent_type", "planner"));
+        awaitIdle(rig.subagents);
+        assertEquals(List.of("read_file"), planner.menus.get(0), "plan 类型拿不到 write_file 和 bash");
+
+        rig.spawn(Map.of("message", "跑", "agent_type", "quiet"));
+        awaitIdle(rig.subagents);
+        rig.exec("bash", Map.of());
+        assertEquals(List.of("true", "false"), flags, "子 agent 的调用带 dontAsk，主 agent 的不带");
+    }
+
+    @Test
     @DisplayName("maxTurns：类型定义的步数上限压过会话默认；撞线交回的是 partial（不是 errored），send_input 能接着做完")
     void maxTurnsEndsPartialAndCanResume() throws Exception {
         Script child = new Script()

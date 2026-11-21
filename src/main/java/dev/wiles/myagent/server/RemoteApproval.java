@@ -95,6 +95,12 @@ public final class RemoteApproval implements ApprovalPolicy {
         if (Thread.currentThread().isInterrupted()) {
             return ApprovalVerdict.interrupted();
         }
+        // 子 agent 是 dontAsk 模式：照 Claude Code，「会弹框的那些调用」直接拒绝——它在后台跑，不打扰人。
+        // 被规则放行的那些到不了这里（PolicyGate 在前面），所以拒的正好是「要问人」的那部分
+        if (ApprovalScope.dontAsk()) {
+            return ApprovalVerdict.no("这个子 agent 是 dontAsk 模式：要问用户的操作一律不做。"
+                    + "需要的话在最后的答复里说清楚要做什么、为什么，交给主 agent");
+        }
         if (!hasClients.getAsBoolean()) {
             return ApprovalVerdict.no("当前没有界面连着，没人能确认这个动作。");
         }

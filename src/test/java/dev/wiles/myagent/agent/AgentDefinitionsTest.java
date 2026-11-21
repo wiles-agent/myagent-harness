@@ -67,6 +67,19 @@ class AgentDefinitionsTest {
         assertEquals(0, b.maxTurns(), "不写就是 0：跟会话的默认走");
         assertNull(AgentDefinition.parse(Path.of("t.md"), "---\ndescription: x\nmaxTurns: lots\n---\n"));
         assertNull(AgentDefinition.parse(Path.of("t.md"), "---\ndescription: x\nmaxTurns: -3\n---\n"));
+
+        // permissionMode 只收「收紧」的三种：项目目录里的定义不能借它给子 agent 放宽权限
+        assertEquals(AgentDefinition.PermissionMode.DEFAULT, b.permissionMode());
+        assertEquals(AgentDefinition.PermissionMode.PLAN,
+                AgentDefinition.parse(Path.of("p.md"), "---\ndescription: x\npermissionMode: plan\n---\n").permissionMode());
+        assertEquals(AgentDefinition.PermissionMode.DONT_ASK,
+                AgentDefinition.parse(Path.of("p.md"), "---\ndescription: x\npermissionMode: dontAsk\n---\n").permissionMode());
+        assertEquals(AgentDefinition.PermissionMode.DEFAULT,
+                AgentDefinition.parse(Path.of("p.md"), "---\ndescription: x\npermissionMode: manual\n---\n").permissionMode());
+        for (String loose : List.of("acceptEdits", "bypassPermissions", "auto", "whatever")) {
+            assertNull(AgentDefinition.parse(Path.of("p.md"), "---\ndescription: x\npermissionMode: " + loose + "\n---\n"),
+                    loose + " 会放宽权限或不认识，整份作废");
+        }
         assertEquals(List.of("read_file", "mcp__chrome__click", "mcp__chrome__fill"), List.copyOf(b.resolve(TOOLS)));
         assertTrue(b.ownsRequired());
         assertEquals(List.of(), b.unmatched(TOOLS));

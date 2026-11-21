@@ -21,6 +21,8 @@ package dev.wiles.myagent.tool.safety;
 public final class ApprovalScope {
 
     private static final InheritableThreadLocal<ApprovalOrigin> CURRENT = new InheritableThreadLocal<>();
+    /** 这条线程上要问人的操作一律拒绝、不弹框（子 agent 的 permissionMode: dontAsk）。 */
+    private static final InheritableThreadLocal<Boolean> DONT_ASK = new InheritableThreadLocal<>();
 
     private ApprovalScope() {
     }
@@ -34,8 +36,24 @@ public final class ApprovalScope {
         }
     }
 
+    /** 同上，再带一个「别问人」的标记。 */
+    public static void set(ApprovalOrigin who, boolean dontAsk) {
+        set(who);
+        if (dontAsk) {
+            DONT_ASK.set(Boolean.TRUE);
+        } else {
+            DONT_ASK.remove();
+        }
+    }
+
     public static void clear() {
         CURRENT.remove();
+        DONT_ASK.remove();
+    }
+
+    /** 这条线程上要问人的操作是不是一律拒绝。 */
+    public static boolean dontAsk() {
+        return Boolean.TRUE.equals(DONT_ASK.get());
     }
 
     /** 当前线程的来源；没设过是 null。 */

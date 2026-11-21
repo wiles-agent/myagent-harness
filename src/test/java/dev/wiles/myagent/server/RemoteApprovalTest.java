@@ -288,6 +288,22 @@ class RemoteApprovalTest {
     }
 
     @Test
+    @DisplayName("dontAsk 的子 agent：要问人的操作直接拒绝，框都不弹")
+    void dontAskDeniesWithoutAsking() throws Exception {
+        RemoteApproval approval = withClients();
+        ApprovalVerdict verdict = CompletableFuture.supplyAsync(() -> {
+            ApprovalScope.set(new ApprovalOrigin("agent-4", "quiet", "quiet 子 agent"), true);
+            try {
+                return approval.decide(ApprovalRequest.bash("rm -rf build", "会删除文件"));
+            } finally {
+                ApprovalScope.clear();
+            }
+        }).get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+        assertFalse(verdict.approved());
+        assertTrue(published.isEmpty(), "dontAsk 不该把问题发给界面");
+    }
+
+    @Test
     @DisplayName("计划里跑的时候要说清是谁在问")
     void requestCarriesOrigin() throws Exception {
         RemoteApproval approval = withClients();

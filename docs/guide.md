@@ -349,6 +349,10 @@ disallowedTools: bash
 - `owns: required`：派它必须写 `owns`（和内置 worker 一样）。覆盖内置 worker 时要自己写上。
 - `maxTurns: <步数>`：这种子 agent 一轮最多走几步，压过 `MYAGENT_SUBAGENT_STEPS`。撞线时它先用文字交代进展，
   交回的状态是 `partial`（没做完），不是 `errored`（做坏了）；`send_input` 让它接着做，上下文还在（照 Claude Code）。
+- `permissionMode`：`default`（照常审批，`manual` 同义）、`plan`（始终只读，不管主对话在不在 plan 模式）、
+  `dontAsk`（要问人的操作一律拒绝、不弹框；被已有规则放行的照常做——适合后台跑、不该打扰人的子 agent）。
+  Claude Code 的 `acceptEdits` / `bypassPermissions` / `auto` **不支持**：它们放宽权限，而定义可能来自工作区，
+  一个 PR 加一份就能让子 agent 绕过审批。写了的话整份定义作废、日志里说明原因。主对话在 plan 模式时，所有子 agent 照旧只读。
 - `model: <模型名>`：这种子 agent 用的模型，`inherit` 或不写就跟主对话一样。照 Claude Code，这是子 agent 控制成本的那条路：
   查文件、跑测试这类量大但简单的活交给同一个服务上更便宜的模型。实际用哪个模型按这个顺序定：
   派的时候 `spawn_agent` 传的 `model` → 类型定义的 `model` → `MYAGENT_SUBAGENT_MODEL`；

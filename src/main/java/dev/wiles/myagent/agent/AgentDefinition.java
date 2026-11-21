@@ -40,9 +40,43 @@ import java.util.regex.Pattern;
  *                        照 Claude Code：把简单的活交给同一个服务上更便宜的模型，是子 agent 控制成本的那条路
  * @param maxTurns        这种子 agent 一轮最多走几步；0 表示跟会话的默认（{@code MYAGENT_SUBAGENT_STEPS}）。
  *                        照 Claude Code 的 {@code maxTurns}：撞线交回的是 partial，能用 send_input 接着做
+ * @param permissionMode  这种子 agent 的权限模式，见 {@link PermissionMode}
  */
 public record AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
-                              String rules, boolean ownsRequired, String source, String model, int maxTurns) {
+                              String rules, boolean ownsRequired, String source, String model, int maxTurns,
+                              PermissionMode permissionMode) {
+
+    /**
+     * 照 Claude Code 的 {@code permissionMode}，但<b>只收收紧的三种</b>。
+     *
+     * <p>Claude Code 还有 acceptEdits / bypassPermissions / auto——都是放宽。我们会读工作区里的
+     * {@code .myagent/agents/}，一个 PR 往仓库里加一份 bypassPermissions 的定义，下一个在这儿跑 agent 的人
+     * 就已经给子 agent 开了绕过审批的口子（Claude Code 对插件里的子 agent 也是出于安全考虑直接忽略这个字段）。
+     * 所以写了放宽的模式，整份定义作废，而不是悄悄降级成 default——悄悄降级的话写的人以为生效了。
+     */
+    public enum PermissionMode {
+        /** 照常审批。{@code manual} 是它的别名。 */
+        DEFAULT,
+        /** 始终只读：只拿得到 plan 模式下的那些工具，不管主对话在不在 plan 模式。 */
+        PLAN,
+        /** 要问人的操作一律拒绝、不弹框；被规则放行的照常做。适合在后台跑、不该打扰人的子 agent。 */
+        DONT_ASK;
+
+        static PermissionMode parse(String raw) {
+            if (raw == null || raw.isBlank()) {
+                return DEFAULT;
+            }
+            return switch (raw.strip()) {
+                case "default", "manual" -> DEFAULT;
+                case "plan" -> PLAN;
+                case "dontAsk" -> DONT_ASK;
+                case "acceptEdits", "bypassPermissions", "auto" -> throw new IllegalArgumentException(
+                        "permissionMode: " + raw.strip() + " 会放宽权限，不支持（项目目录里的定义不能借它绕过审批）。"
+                                + "只认 default / plan / dontAsk");
+                default -> throw new IllegalArgumentException("permissionMode 只认 default / plan / dontAsk，收到: " + raw);
+            };
+        }
+    }
 
     private static final Logger log = LoggerFactory.getLogger(AgentDefinition.class);
 
@@ -75,16 +109,23 @@ public record AgentDefinition(String name, String description, List<String> tool
         if (maxTurns < 0) {
             throw new IllegalArgumentException(name + " 的 maxTurns 不能是负数: " + maxTurns);
         }
+        permissionMode = permissionMode == null ? PermissionMode.DEFAULT : permissionMode;
+    }
+
+    public AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
+                           String rules, boolean ownsRequired, String source, String model, int maxTurns) {
+        this(name, description, tools, disallowedTools, rules, ownsRequired, source, model, maxTurns,
+                PermissionMode.DEFAULT);
     }
 
     public AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
                            String rules, boolean ownsRequired, String source, String model) {
-        this(name, description, tools, disallowedTools, rules, ownsRequired, source, model, 0);
+        this(name, description, tools, disallowedTools, rules, ownsRequired, source, model, 0, PermissionMode.DEFAULT);
     }
 
     public AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
                            String rules, boolean ownsRequired, String source) {
-        this(name, description, tools, disallowedTools, rules, ownsRequired, source, null, 0);
+        this(name, description, tools, disallowedTools, rules, ownsRequired, source, null, 0, PermissionMode.DEFAULT);
     }
 
     private static int turns(String raw) {
@@ -166,7 +207,8 @@ public record AgentDefinition(String name, String description, List<String> tool
                     toolList(front.getOrDefault("disallowedtools", "")),
                     parsed.body(),
                     "required".equalsIgnoreCase(front.getOrDefault("owns", "").strip()),
-                    file.toString(), front.get("model"), turns(front.get("maxturns")));
+                    file.toString(), front.get("model"), turns(front.get("maxturns")),
+                    PermissionMode.parse(front.get("permissionmode")));
         } catch (IllegalArgumentException e) {
             log.warn("agent 定义 {} 作废: {}", file, e.getMessage());
             return null;

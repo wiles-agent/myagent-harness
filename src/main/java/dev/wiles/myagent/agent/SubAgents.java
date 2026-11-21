@@ -660,7 +660,7 @@ public final class SubAgents implements Mailbox {
         ApprovalOrigin who = originOf(child);
         Thread worker = new Thread(() -> {
             // 这条线程（和它为每次工具调用新开的线程）要的审批，都标明是这个子 agent，见 ApprovalScope
-            ApprovalScope.set(who);
+            ApprovalScope.set(who, child.role.permissionMode() == AgentDefinition.PermissionMode.DONT_ASK);
             String text = null;
             Throwable error = null;
             try {
@@ -1094,6 +1094,11 @@ public final class SubAgents implements Mailbox {
         StringBuilder roles = new StringBuilder();
         for (AgentDefinition role : allowed()) {
             roles.append("- ").append(role.name()).append("：").append(role.description());
+            switch (role.permissionMode()) {      // 派之前就得知道：别把要改文件的活派给只读的类型
+                case PLAN -> roles.append("（只读）");
+                case DONT_ASK -> roles.append("（不问人：要审批的操作会被直接拒绝）");
+                default -> { }
+            }
             if (role.tools() != null) {
                 // 白名单收窄过的，把菜单亮出来：派之前就知道它干不干得了
                 roles.append("（工具：").append(String.join(", ", role.resolve(inheritable()))).append('）');
@@ -1221,7 +1226,10 @@ public final class SubAgents implements Mailbox {
                     role.maxTurns() > 0 ? role.maxTurns() : settings.childMaxSteps(), contexts.get())
                     .withWritingTools(BuiltinTools.WRITING_TOOLS)
                     .withStepBudget(settings.budget())
-                    .withToolGate(fork ? SubAgents.this::forkMayUse : SubAgents.this::childMayUse);
+                    .withToolGate(fork ? SubAgents.this::forkMayUse
+                            : role.permissionMode() == AgentDefinition.PermissionMode.PLAN
+                            ? PlanMode.READ_ONLY_TOOLS::contains      // plan 类型：不管主对话在不在 plan 模式，始终只读
+                            : SubAgents.this::childMayUse);
             if (fork) {
                 agent.restore(forked(parentAgent.conversation()));
             }
