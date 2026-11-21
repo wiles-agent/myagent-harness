@@ -97,6 +97,20 @@ public final class AgentDefinitions {
         return load(searchPath(workspace, Path.of(System.getProperty("user.home"))));
     }
 
+    /**
+     * 无头运行（{@code --once}）用哪些类型。默认只用内置的：评测跑在别人的机器上，
+     * 本机 {@code ~/.claude/agents} 里有什么不该改变测出来的东西。{@code MYAGENT_AGENTS=on} 才读定义文件——
+     * 想测某份自定义定义时打开，和 {@code MYAGENT_MCP} 是同一种对照开关。
+     */
+    public static AgentDefinitions forHeadless(java.util.function.Function<String, String> env, Path workspace,
+                                               Path home) {
+        String on = env.apply("MYAGENT_AGENTS");
+        if (on == null || !java.util.Set.of("on", "1", "true", "yes").contains(on.strip().toLowerCase(java.util.Locale.ROOT))) {
+            return builtins();
+        }
+        return load(searchPath(workspace, home));
+    }
+
     /** 优先级从高到低。 */
     static List<Path> searchPath(Path workspace, Path home) {
         List<Path> dirs = new ArrayList<>();

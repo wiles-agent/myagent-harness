@@ -109,6 +109,20 @@ class AgentDefinitionsTest {
     }
 
     @Test
+    @DisplayName("无头模式：默认只用内置类型（评测不受本机定义影响）；MYAGENT_AGENTS=on 才读工作区和家目录的定义")
+    void headlessLoadsCustomTypesOnlyWhenAsked(@TempDir Path tmp) throws Exception {
+        Path ws = tmp.resolve("ws");
+        Path home = tmp.resolve("home");
+        write(ws.resolve(".myagent/agents/scout.md"), "查东西");
+
+        AgentDefinitions off = AgentDefinitions.forHeadless(java.util.Map.<String, String>of()::get, ws, home);
+        assertNull(off.get("scout"));
+        AgentDefinitions on = AgentDefinitions.forHeadless(java.util.Map.of("MYAGENT_AGENTS", "on")::get, ws, home);
+        assertEquals("查东西", on.get("scout").description());
+        assertNotNull(on.get("worker"));
+    }
+
+    @Test
     @DisplayName("描述预算：只算自定义类型；超过 15000 token 要报出来，但照样全部加载")
     void descriptionBudget() {
         assertEquals(0, AgentDefinitions.builtins().customDescriptionTokens(), "内置的不算");

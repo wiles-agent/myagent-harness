@@ -367,7 +367,7 @@ disallowedTools: bash
   给 fork 指定模型会被拒绝。子 agent 的 token 照常记进总账，评测摘要里每个子 agent 记着它用的模型。
 - 坏定义只作废它自己（没写 description、名字不是小写字母数字 `-` `_`、通配写错），日志里有一行 warn；
   `tools` 里对不上任何工具的名字也会 warn——写错名字的症状是「它就是不用那个工具」。
-- 无头运行（`--once`）只用内置三种，评测结果不受本机定义的影响。
+- 无头运行（`--once`）默认只用内置类型，评测结果不受本机定义的影响；设 `MYAGENT_AGENTS=on` 才读定义文件（想测某份自定义定义时打开）。
 
 本机评测：`bench/asyncodebench/run_matrix.sh A,D cookiecutter 3` 按组交替跑，
 `bench/asyncodebench/summarize.py <清单>` 汇总成表（组的定义见脚本开头）。

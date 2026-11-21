@@ -218,7 +218,9 @@ public final class Headless {
                             });
             if (subagents != null) {
                 tools.registerAll(subagents.tools());
-                subagents.withModelClients(model -> meter.meter(new DeepSeekClient(config.withModel(model))));
+                subagents.withModelClients(model -> meter.meter(new DeepSeekClient(config.withModel(model))))
+                        .withDefinitions(dev.wiles.myagent.agent.AgentDefinitions.forHeadless(System::getenv,
+                                workspace.root(), Path.of(System.getProperty("user.home"))));
             }
             // 和界面那条路径一样：MCP 工具平时只露名字，用到时 tool_search 拉完整说明。
             // 没接 MCP 时这里什么都不做，菜单和以前一字不差
