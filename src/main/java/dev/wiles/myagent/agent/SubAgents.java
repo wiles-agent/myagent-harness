@@ -332,6 +332,8 @@ public final class SubAgents implements Mailbox {
     static final class Tree {
         final List<SubAgents> members = new java.util.concurrent.CopyOnWriteArrayList<>();
         final java.util.concurrent.atomic.AtomicInteger open = new java.util.concurrent.atomic.AtomicInteger();
+        /** 整棵树一共派过几个：嵌套那层收掉后就从 members 摘了，总数不能靠数 members。 */
+        final java.util.concurrent.atomic.AtomicInteger spawnedAll = new java.util.concurrent.atomic.AtomicInteger();
 
         boolean tryReserve(int max) {
             while (true) {
@@ -362,6 +364,11 @@ public final class SubAgents implements Mailbox {
     private final Map<String, Child> children = new LinkedHashMap<>();
     private final List<Notice> notices = new ArrayList<>();
     private final AtomicInteger spawned = new AtomicInteger();
+    /**
+     * 这一层被 shutdown 收掉的子 agent，在摘要里的样子（连同它们派过的）。只留 JSON 不留 Child：
+     * 长连接的会话里，留着 Child 就是留着它整段对话。
+     */
+    private final com.fasterxml.jackson.databind.node.ArrayNode retired = JSON.createArrayNode();
 
     // ---- 收尾验证：子 agent 写过、主 agent 还没跑过测试的文件 ----
     /** 子 agent 写过、主 agent 之后还没跑过测试的文件（显示用的相对路径）。 */
@@ -706,9 +713,12 @@ public final class SubAgents implements Mailbox {
      * 评测摘要用：派了几个、写入冲突几次、收尾提醒几次，以及每个子 agent 的事实记录。
      */
     public ObjectNode report() {
+        ObjectNode out = JSON.createObjectNode();
+        // 下一层的条目锁外补：不拿着自己的锁去拿别人的（和 shutdown 同一条规矩）
+        Map<ObjectNode, SubAgents> below = new java.util.LinkedHashMap<>();
         synchronized (lock) {
-            ObjectNode out = JSON.createObjectNode();
             out.put("spawned", spawned.get());
+            out.put("spawnedAllLevels", tree.spawnedAll.get());
             ObjectNode shown = settings.toJson();
             var shownRoles = shown.putArray("roles");                // 换成实际能派的，而不是「空 = 全部」
             allowed().forEach(d -> shownRoles.add(d.name()));
@@ -721,7 +731,32 @@ public final class SubAgents implements Mailbox {
             out.put("mainWriteRefusals", mainRefusals);
             out.put("verifyReminders", verifyReminders);
             out.put("unverifiedAtEnd", unverified.size());
-            var list = out.putArray("children");
+            below.putAll(childEntries(out.putArray("children")));
+        }
+        fillBelow(below);
+        return out;
+    }
+
+    /** 逐层往下补：每层只在自己的锁里列自己的子 agent，深度最多 5，递归不会深。 */
+    private static void fillBelow(Map<ObjectNode, SubAgents> below) {
+        below.forEach((node, nested) -> fillBelow(nested.childEntries(node.putArray("children"))));
+    }
+
+    /**
+     * 这一层每个子 agent 的事实记录加进 {@code list}。返回「条目 → 它派出去的那一层」，留给调用方锁外往下补。
+     */
+    private Map<ObjectNode, SubAgents> childEntries(com.fasterxml.jackson.databind.node.ArrayNode list) {
+        return childEntries(list, true);
+    }
+
+    /** @param withRetired 带上已经收掉的那些；shutdown 记快照时不带，不然收几次就重复几次 */
+    private Map<ObjectNode, SubAgents> childEntries(com.fasterxml.jackson.databind.node.ArrayNode list,
+                                                    boolean withRetired) {
+        Map<ObjectNode, SubAgents> below = new java.util.LinkedHashMap<>();
+        synchronized (lock) {
+            if (withRetired) {
+                retired.forEach(n -> list.add(n.deepCopy()));
+            }
             for (Child c : children.values()) {
                 ObjectNode n = list.addObject();
                 n.put("id", c.id);
@@ -739,9 +774,12 @@ public final class SubAgents implements Mailbox {
                 n.put("commands", c.commands.size());
                 n.put("testRuns", c.commands.stream().filter(e -> TEST_COMMAND.matcher(e.command()).find()).count());
                 n.put("refusals", c.refusals);
+                if (c.nested != null) {
+                    below.put(n, c.nested);
+                }
             }
-            return out;
         }
+        return below;
     }
 
     /**
@@ -854,6 +892,9 @@ public final class SubAgents implements Mailbox {
     public void shutdown() {
         List<SubAgents> below = new ArrayList<>();
         List<GitWorktree> trees = new ArrayList<>();
+        // 收之前先把摘要里的样子记下来：关掉不等于没发生过，评测还要数它们写了什么、跑了什么
+        var gone = JSON.createArrayNode();
+        Map<ObjectNode, SubAgents> goneBelow = childEntries(gone, false);
         synchronized (lock) {
             for (Child child : children.values()) {
                 if (!child.closed) {
@@ -877,6 +918,10 @@ public final class SubAgents implements Mailbox {
             lock.notifyAll();
         }
         below.forEach(SubAgents::shutdown);      // 锁外收下一层：不拿着自己的锁去拿别人的
+        fillBelow(goneBelow);                   // 下一层刚收完，它们的记录已经在各自的 retired 里
+        synchronized (lock) {
+            gone.forEach(n -> retired.add(n));
+        }
         trees.forEach(GitWorktree::removeIfClean);   // 锁外跑 git：没改动的收掉，有改动的留着等合并
         closeLaunched();
         if (level > 1) {
@@ -1746,6 +1791,7 @@ public final class SubAgents implements Mailbox {
                 startTurn(child, fork ? forkBrief(id, task) : task);
             }
             spawned.incrementAndGet();
+            tree.spawnedAll.incrementAndGet();
             log.info("派出 {}（{}）: {}", id, role.name(), message.length() > 80 ? message.substring(0, 80) + "…" : message);
             ObjectNode out = JSON.createObjectNode();
             out.put("agent_id", id);

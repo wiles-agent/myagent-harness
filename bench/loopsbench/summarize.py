@@ -36,6 +36,13 @@ def tests(trial_dir):
     return None
 
 
+def walk(children):
+    """subagentReport 的 children 连同嵌套的孙一级（挂在各自的 children 下）一起展开。"""
+    for c in children or []:
+        yield c
+        yield from walk(c.get("children"))
+
+
 def main(dirs):
     for label_dir in dirs:
         label = os.path.basename(os.path.normpath(label_dir))
@@ -52,7 +59,7 @@ def main(dirs):
                 done = sum(r.get("completionTokens", 0) for r in rounds)
                 steps = sum(r.get("steps", 0) for r in rounds)
                 kinds = collections.Counter(c.get("type") for r in rounds
-                                            for c in (r.get("subagentReport") or {}).get("children", []))
+                                            for c in walk((r.get("subagentReport") or {}).get("children")))
                 secs = sum(r.get("durationMs", 0) for r in rounds) / 1000
                 ft = {k: v for k, v in (t.get("final_test_results") or {}).items() if not k.startswith("__")}
                 passed = sum(1 for v in ft.values() if v == "passed")

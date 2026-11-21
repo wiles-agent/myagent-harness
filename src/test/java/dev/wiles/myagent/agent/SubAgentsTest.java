@@ -557,6 +557,77 @@ class SubAgentsTest {
     }
 
     @Test
+    @DisplayName("嵌套：评测摘要里看得见孙子——挂在派它的那个子 agent 下面，另给全树总数")
+    void reportIncludesNestedChildren() throws Exception {
+        Script child = new Script()
+                .call("spawn_agent", "{\"message\":\"写 b\",\"agent_type\":\"default\",\"name\":\"grandkid\"}")
+                .call("wait_agent", m -> "{\"targets\":[\"" + lastAgentId(m) + "\"]}")
+                .reply("汇总")
+                .reply("没法跑测试，明说没验证");      // 孙子写过文件：收尾前会被提醒验证一次
+        Script grand = new Script().call("write_file", "{\"path\":\"src/b.py\",\"content\":\"x\"}").reply("写完了");
+        Rig rig = new Rig(SubAgents.Mode.ON, 0, settings(Map.of("MYAGENT_SUBAGENT_DEPTH", "2"), 0, null), child, grand);
+
+        rig.spawn(Map.of("message", "查", "agent_type", "default", "name", "lead"));
+        awaitIdle(rig.subagents);
+
+        JsonNode report = rig.subagents.report();
+        assertEquals(1, report.path("spawned").asInt(), "顶层这一层只派了一个");
+        assertEquals(2, report.path("spawnedAllLevels").asInt(), report.toString());
+        JsonNode lead = report.path("children").get(0);
+        assertEquals("lead", lead.path("name").asText());
+        JsonNode nested = lead.path("children");
+        assertEquals(1, nested.size(), report.toString());
+        assertEquals("grandkid", nested.get(0).path("name").asText());
+        assertEquals("default", nested.get(0).path("type").asText());
+        assertEquals(java.nio.file.Path.of("src", "b.py").toString(), nested.get(0).path("filesWritten").get(0).asText(),
+                report.toString());      // 记的是本机路径写法
+    }
+
+    @Test
+    @DisplayName("嵌套：子 agent 被 close_agent 关掉之后，摘要里它派过的孙子还在（关掉不等于没发生过）")
+    void reportKeepsNestedChildrenAfterClose() throws Exception {
+        Script child = new Script()
+                .call("spawn_agent", "{\"message\":\"查 b\",\"agent_type\":\"explorer\",\"name\":\"grandkid\"}")
+                .call("wait_agent", m -> "{\"targets\":[\"" + lastAgentId(m) + "\"]}")
+                .reply("汇总");
+        Script grand = new Script().reply("查完了");
+        Rig rig = new Rig(SubAgents.Mode.ON, 0, settings(Map.of("MYAGENT_SUBAGENT_DEPTH", "2"), 0, null), child, grand);
+
+        String id = rig.spawn(Map.of("message", "查", "agent_type", "default", "name", "lead"));
+        awaitIdle(rig.subagents);
+        assertTrue(rig.exec("close_agent", Map.of("target", id)).ok());
+
+        JsonNode report = rig.subagents.report();
+        assertEquals(2, report.path("spawnedAllLevels").asInt(), report.toString());
+        JsonNode nested = report.path("children").get(0).path("children");
+        assertEquals(1, nested.size(), report.toString());
+        assertEquals("grandkid", nested.get(0).path("name").asText());
+        assertEquals("completed", nested.get(0).path("state").asText(), "关之前它已经做完了，记的是它做完时的样子");
+    }
+
+    @Test
+    @DisplayName("嵌套：收了又收（关掉子 agent 后会话结束再 shutdown 几次），摘要里每个只出现一次")
+    void reportDoesNotDuplicateAfterRepeatedShutdown() throws Exception {
+        Script child = new Script()
+                .call("spawn_agent", "{\"message\":\"查 b\",\"agent_type\":\"explorer\",\"name\":\"grandkid\"}")
+                .call("wait_agent", m -> "{\"targets\":[\"" + lastAgentId(m) + "\"]}")
+                .reply("汇总");
+        Script grand = new Script().reply("查完了");
+        Rig rig = new Rig(SubAgents.Mode.ON, 0, settings(Map.of("MYAGENT_SUBAGENT_DEPTH", "2"), 0, null), child, grand);
+
+        String id = rig.spawn(Map.of("message", "查", "agent_type", "default", "name", "lead"));
+        awaitIdle(rig.subagents);
+        rig.exec("close_agent", Map.of("target", id));
+        rig.subagents.shutdown();
+        rig.subagents.shutdown();
+
+        JsonNode report = rig.subagents.report();
+        assertEquals(1, report.path("children").size(), report.toString());
+        assertEquals(1, report.path("children").get(0).path("children").size(), report.toString());
+        assertEquals(2, report.path("spawnedAllLevels").asInt());
+    }
+
+    @Test
     @DisplayName("嵌套：并发上限整棵树共用（照 Claude Code 按会话算）——上限 1 时子 agent 再派被拒")
     void concurrencyLimitIsSharedAcrossTheTree() throws Exception {
         Script child = new Script().call("spawn_agent", "{\"message\":\"x\",\"agent_type\":\"explorer\"}").reply("派不出去");

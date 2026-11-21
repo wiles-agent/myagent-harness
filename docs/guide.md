@@ -301,6 +301,7 @@ myagent 一步都不插手。`--isolated` 每次开临时 profile，进程一死
   评测里 flash 模型一层都很少派，默认放开只多一种失控的花钱方式）。放开后：没到最深一层的子 agent 有自己的派遣工具，
   它派出去的结果送回它；并发上限 `MYAGENT_SUBAGENT_MAX` 整棵树一起算；写入归属跨层生效（祖先独占的文件可以写——那是委派下来的活）；
   叫停、关掉、会话结束都沿着树往下传。fork 不再往下派。主 agent 交卷前会等还在跑的子 agent；按停时它们一起停。
+  无头运行的摘要 `subagentReport` 里，孙一级挂在派它的那个子 agent 的 `children` 下；`spawned` 只算顶层派的，`spawnedAllLevels` 是全树总数。
 - 派的时候可以用 `name` 起名字（照 Claude Code）：之后 `send_input` / `wait_agent` / `close_agent` / `resume_agent`
   写名字和写 id 一样。名字是小写字母开头的 `a-z0-9-_`，不超过 32 个字符，不能写成 `agent-数字`（那是 id 的样子）。
   同名再派一个，名字就归新的那个，旧的只能用 id 找。
