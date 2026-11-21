@@ -44,10 +44,12 @@ import java.util.regex.Pattern;
  * @param skills          派出时预载进它系统提示词的技能（按技能 id）。照 Claude Code：只管预载，
  *                        不限制它能调哪些技能
  * @param memory          给不给它长期记忆（{@code recall} / {@code remember}），见 {@link Memory}
+ * @param background      照 Claude Code：后台类型，主 agent 要等它时也不阻塞，结果只走通知
  */
 public record AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
                               String rules, boolean ownsRequired, String source, String model, int maxTurns,
-                              PermissionMode permissionMode, List<String> skills, Memory memory) {
+                              PermissionMode permissionMode, List<String> skills, Memory memory,
+                              boolean background) {
 
     /**
      * 照 Claude Code：子 agent <b>不继承</b>长期记忆，定义里写了 {@code memory} 才有。
@@ -145,7 +147,7 @@ public record AgentDefinition(String name, String description, List<String> tool
     public AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
                            String rules, boolean ownsRequired, String source) {
         this(name, description, tools, disallowedTools, rules, ownsRequired, source,
-                null, 0, PermissionMode.DEFAULT, List.of(), Memory.NONE);
+                null, 0, PermissionMode.DEFAULT, List.of(), Memory.NONE, false);
     }
 
     /**
@@ -169,6 +171,7 @@ public record AgentDefinition(String name, String description, List<String> tool
         private PermissionMode permissionMode = PermissionMode.DEFAULT;
         private List<String> skills = List.of();
         private Memory memory = Memory.NONE;
+        private boolean background;
 
         private Builder(String name, String description) {
             this.name = name;
@@ -185,11 +188,24 @@ public record AgentDefinition(String name, String description, List<String> tool
         public Builder permissionMode(PermissionMode v) { this.permissionMode = v; return this; }
         public Builder skills(List<String> v) { this.skills = v; return this; }
         public Builder memory(Memory v) { this.memory = v; return this; }
+        public Builder background(boolean v) { this.background = v; return this; }
 
         public AgentDefinition build() {
             return new AgentDefinition(name, description, tools, disallowedTools, rules, ownsRequired, source,
-                    model, maxTurns, permissionMode, skills, memory);
+                    model, maxTurns, permissionMode, skills, memory, background);
         }
+    }
+
+    /** 布尔字段：不写是 false；只认 true / false（yes / no 也行），别的整份作废——写错了不能悄悄当成 false。 */
+    static boolean flag(String field, String raw) {
+        if (raw == null || raw.isBlank()) {
+            return false;
+        }
+        return switch (raw.strip().toLowerCase(Locale.ROOT)) {
+            case "true", "yes" -> true;
+            case "false", "no" -> false;
+            default -> throw new IllegalArgumentException(field + " 只认 true / false，收到: " + raw);
+        };
     }
 
     private static int turns(String raw) {
@@ -277,6 +293,7 @@ public record AgentDefinition(String name, String description, List<String> tool
                     .permissionMode(PermissionMode.parse(front.get("permissionmode")))
                     .skills(nameList(front.getOrDefault("skills", "")))
                     .memory(Memory.parse(front.get("memory")))
+                    .background(flag("background", front.get("background")))
                     .build();
         } catch (IllegalArgumentException e) {
             log.warn("agent 定义 {} 作废: {}", file, e.getMessage());

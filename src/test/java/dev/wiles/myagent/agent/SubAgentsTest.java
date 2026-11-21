@@ -450,6 +450,36 @@ class SubAgentsTest {
     }
 
     @Test
+    @DisplayName("background：后台类型 wait_agent 不阻塞，立刻回它的状态并说明结果走通知；说明里标出来；做完照样来通知")
+    void backgroundTypesAreNeverWaitedOn() throws Exception {
+        CountDownLatch release = new CountDownLatch(1);
+        Script slow = new Script();
+        slow.steps.add(m -> {
+            try {
+                release.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return ChatMessage.assistant("后台做完了");
+        });
+        Rig rig = new Rig(slow);
+        rig.subagents.withDefinitions(AgentDefinitions.of(List.of(
+                AgentDefinition.builder("indexer", "建索引").source("t").background(true).build())));
+        assertTrue(rig.subagents.spawnDescription().contains("- indexer：建索引（后台跑"), rig.subagents.spawnDescription());
+
+        String id = rig.spawn(Map.of("message", "建", "agent_type", "indexer"));
+        long t0 = System.nanoTime();
+        JsonNode waited = M.readTree(rig.exec("wait_agent", Map.of("targets", List.of(id))).content());
+        assertTrue((System.nanoTime() - t0) / 1_000_000 < 2_000, "后台类型不能把主 agent 卡住");
+        assertEquals("running", waited.path("status").path(id).asText(), waited.toString());
+        assertTrue(waited.path("note").asText().contains("后台"), waited.toString());
+
+        release.countDown();
+        awaitIdle(rig.subagents);
+        assertTrue(String.join("\n", rig.subagents.drain()).contains("后台做完了"), "结果照样以通知送回");
+    }
+
+    @Test
     @DisplayName("记忆：子 agent 默认拿不到 recall / remember（照 Claude Code 不继承）；类型定义写了 memory 才给；fork 照主对话")
     void memoryIsOptIn() throws Exception {
         Script plain = new Script().reply("ok");

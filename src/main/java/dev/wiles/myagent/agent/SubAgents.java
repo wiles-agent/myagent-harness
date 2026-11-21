@@ -768,6 +768,22 @@ public final class SubAgents implements Mailbox {
     }
 
     /** 开着的（没关的）有几个。调用方持有 {@link #lock}。 */
+    /** 要等的目标全是还在跑的后台类型（找不到的不算）。在 {@link #lock} 下调。 */
+    private boolean onlyBackgroundRunning(List<String> targets) {
+        boolean any = false;
+        for (String id : targets) {
+            Child c = find(id);
+            if (c == null) {
+                continue;
+            }
+            if (!c.role.background() || !c.running) {
+                return false;
+            }
+            any = true;
+        }
+        return any;
+    }
+
     /** 子 agent 的名字：小写字母开头，字母数字 - _，不长于 32；不许长得像编号（agent-3），免得和 id 混。 */
     static final java.util.regex.Pattern CHILD_NAME = java.util.regex.Pattern.compile("[a-z][a-z0-9_-]{0,31}");
 
@@ -1133,6 +1149,9 @@ public final class SubAgents implements Mailbox {
         StringBuilder roles = new StringBuilder();
         for (AgentDefinition role : allowed()) {
             roles.append("- ").append(role.name()).append("：").append(role.description());
+            if (role.background()) {
+                roles.append("（后台跑：不能等它，结果做完以通知送回）");
+            }
             switch (role.permissionMode()) {      // 派之前就得知道：别把要改文件的活派给只读的类型
                 case PLAN -> roles.append("（只读）");
                 case DONT_ASK -> roles.append("（不问人：要审批的操作会被直接拒绝）");
@@ -1422,6 +1441,17 @@ public final class SubAgents implements Mailbox {
                         out.put("note", NO_AUTHORITY);
                         out.set("status", statuses);
                         out.put("timed_out", false);
+                        return json(out);
+                    }
+                    // 照 Claude Code 的 background：要等的全是还在跑的后台类型，就不等——立刻回状态，结果走通知
+                    if (onlyBackgroundRunning(targets)) {
+                        ObjectNode out = JSON.createObjectNode();
+                        ObjectNode running = out.putObject("status");
+                        for (String id : targets) {
+                            running.set(id, status(find(id)));
+                        }
+                        out.put("timed_out", false);
+                        out.put("note", "这些是后台类型的子 agent：不等它们，做完会以 <subagent_notification> 送回。先去做别的。");
                         return json(out);
                     }
                     long remaining = deadline - System.nanoTime();

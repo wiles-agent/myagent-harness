@@ -358,6 +358,8 @@ disallowedTools: bash
 - `memory: user | project | local`：子 agent **默认没有** `recall` / `remember`（照 Claude Code 不继承长期记忆）——
   它常在读不可信的文件，被带偏后写进长期记忆的东西会一直留在以后的会话里。写了才给；用的是主对话那一套记忆，
   没有每个子 agent 单独的目录，`local` 按 `project` 算。fork 照主对话的菜单，不受影响。
+- `background: true`：后台类型（照 Claude Code）。主 agent 对它 `wait_agent` 不会阻塞：立刻返回它当前的状态，
+  并说明结果会以通知送回；做完照常来通知。说明里会标出来，主 agent 派之前就知道别指望等它。
 - 自定义类型的 `description` 加起来超过约 15000 token 时，启动日志里会报总数（照 Claude Code）：这些描述每一轮都跟着
   `spawn_agent` 的说明发出去。只提醒、不丢定义；把描述写短，细节挪进正文（正文只进那个子 agent 自己的系统提示词）。
 - `model: <模型名>`：这种子 agent 用的模型，`inherit` 或不写就跟主对话一样。照 Claude Code，这是子 agent 控制成本的那条路：
