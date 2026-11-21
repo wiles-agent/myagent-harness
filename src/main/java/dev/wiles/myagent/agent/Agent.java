@@ -1275,6 +1275,11 @@ public final class Agent {
         }
     }
 
+    /** 这个失败理由是不是「步数用完了」（自己的上限或共用预算）——那是没做完，不是做坏了。 */
+    public static boolean isStepLimit(String reason) {
+        return reason != null && (reason.startsWith("达到最大步数") || reason.startsWith("达到总步数预算"));
+    }
+
     /** 撞上的是哪条线。自己的步数上限沿用原来的说法（评测脚本按它认「跑满步数」）。 */
     private String limitLabel() {
         return budgetExhausted ? "达到总步数预算 " + budget.total() + "（主 agent 和子 agent 共用）"

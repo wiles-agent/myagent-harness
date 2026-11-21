@@ -63,6 +63,10 @@ class AgentDefinitionsTest {
         assertNull(AgentDefinition.parse(Path.of("m.md"), "---\ndescription: x\nmodel: inherit\n---\n").model());
         assertNull(AgentDefinition.parse(Path.of("m.md"), "---\ndescription: x\nmodel: a b; rm\n---\n"),
                 "模型名会原样进请求体，不成形的整份作废");
+        assertEquals(12, AgentDefinition.parse(Path.of("t.md"), "---\ndescription: x\nmaxTurns: 12\n---\n").maxTurns());
+        assertEquals(0, b.maxTurns(), "不写就是 0：跟会话的默认走");
+        assertNull(AgentDefinition.parse(Path.of("t.md"), "---\ndescription: x\nmaxTurns: lots\n---\n"));
+        assertNull(AgentDefinition.parse(Path.of("t.md"), "---\ndescription: x\nmaxTurns: -3\n---\n"));
         assertEquals(List.of("read_file", "mcp__chrome__click", "mcp__chrome__fill"), List.copyOf(b.resolve(TOOLS)));
         assertTrue(b.ownsRequired());
         assertEquals(List.of(), b.unmatched(TOOLS));

@@ -38,9 +38,11 @@ import java.util.regex.Pattern;
  * @param source          哪来的：{@code builtin} 或文件路径。日志和排查用
  * @param model           这种子 agent 用的模型；null（或文件里写 {@code inherit}）表示跟主对话一样。
  *                        照 Claude Code：把简单的活交给同一个服务上更便宜的模型，是子 agent 控制成本的那条路
+ * @param maxTurns        这种子 agent 一轮最多走几步；0 表示跟会话的默认（{@code MYAGENT_SUBAGENT_STEPS}）。
+ *                        照 Claude Code 的 {@code maxTurns}：撞线交回的是 partial，能用 send_input 接着做
  */
 public record AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
-                              String rules, boolean ownsRequired, String source, String model) {
+                              String rules, boolean ownsRequired, String source, String model, int maxTurns) {
 
     private static final Logger log = LoggerFactory.getLogger(AgentDefinition.class);
 
@@ -70,11 +72,30 @@ public record AgentDefinition(String name, String description, List<String> tool
         }
         rules = rules == null ? "" : rules.strip();
         model = normalizeModel(model);
+        if (maxTurns < 0) {
+            throw new IllegalArgumentException(name + " 的 maxTurns 不能是负数: " + maxTurns);
+        }
+    }
+
+    public AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
+                           String rules, boolean ownsRequired, String source, String model) {
+        this(name, description, tools, disallowedTools, rules, ownsRequired, source, model, 0);
     }
 
     public AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
                            String rules, boolean ownsRequired, String source) {
-        this(name, description, tools, disallowedTools, rules, ownsRequired, source, null);
+        this(name, description, tools, disallowedTools, rules, ownsRequired, source, null, 0);
+    }
+
+    private static int turns(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(raw.strip());
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException("maxTurns 要一个整数，收到: " + raw);
+        }
     }
 
     /** 空、{@code inherit} 都算「跟主对话一样」。模型名只认常见字符——它会原样进请求体。 */
@@ -145,7 +166,7 @@ public record AgentDefinition(String name, String description, List<String> tool
                     toolList(front.getOrDefault("disallowedtools", "")),
                     parsed.body(),
                     "required".equalsIgnoreCase(front.getOrDefault("owns", "").strip()),
-                    file.toString(), front.get("model"));
+                    file.toString(), front.get("model"), turns(front.get("maxturns")));
         } catch (IllegalArgumentException e) {
             log.warn("agent 定义 {} 作废: {}", file, e.getMessage());
             return null;

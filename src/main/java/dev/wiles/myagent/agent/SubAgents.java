@@ -242,7 +242,7 @@ public final class SubAgents implements Mailbox {
     private static final AtomicInteger SEQ = new AtomicInteger();
     private static final AtomicInteger SUBMISSIONS = new AtomicInteger();
 
-    private enum State { RUNNING, COMPLETED, ERRORED, INTERRUPTED, SHUTDOWN }
+    private enum State { RUNNING, COMPLETED, PARTIAL, ERRORED, INTERRUPTED, SHUTDOWN }
 
     /** 一个子 agent。字段都在 {@link #lock} 下读写。 */
     private final class Child {
@@ -272,6 +272,8 @@ public final class SubAgents implements Mailbox {
         String model;
         /** 派的时候起的名字；null 表示没起。照 Claude Code：之后用名字和用 id 一样能找到它。 */
         String name;
+        /** 这一轮是撞了步数上限收的尾：没做完，不是做坏了。 */
+        boolean hitLimit;
 
         // ---- 框架看到的事实（写进通知，不靠它自己说） ----
         /** 写文件工具成功写过的路径。bash 里写的看不到。 */
@@ -640,6 +642,7 @@ public final class SubAgents implements Mailbox {
         child.running = true;
         child.state = State.RUNNING;
         child.failure = null;
+        child.hitLimit = false;
         child.stoppedByParent = false;
         child.timedOut = false;
         int turn = ++child.turn;
@@ -703,6 +706,11 @@ public final class SubAgents implements Mailbox {
                 if (error != null) {
                     child.state = State.ERRORED;
                     child.result = "子 agent 执行失败: " + error;
+                } else if (child.failure != null && child.hitLimit) {
+                    // 照 Claude Code 的 maxTurns：步数用完交回的是「没做完」，带着进展；send_input 能让它接着做
+                    child.state = State.PARTIAL;
+                    child.result = (text == null ? "" : text)
+                            + "\n\n（" + child.failure + "：没做完。要它接着做就 send_input，它的上下文还在）";
                 } else if (child.failure != null) {
                     child.state = State.ERRORED;
                     child.result = child.failure + (text == null || text.isBlank() ? ""
@@ -774,6 +782,7 @@ public final class SubAgents implements Mailbox {
             case INTERRUPTED -> JSON.getNodeFactory().textNode("interrupted");
             case SHUTDOWN -> JSON.getNodeFactory().textNode("shutdown");
             case COMPLETED -> JSON.createObjectNode().put("completed", clip(child.result));
+            case PARTIAL -> JSON.createObjectNode().put("partial", clip(child.result));
             case ERRORED -> JSON.createObjectNode().put("errored", clip(child.result));
         };
     }
@@ -1209,7 +1218,7 @@ public final class SubAgents implements Mailbox {
             Agent agent = new Agent(model == null ? clients.get() : byModel.apply(model),
                     fork ? forkTools(id) : toolsFor(role, id),
                     fork ? parentAgent.systemPrompt() : SystemPrompt.forSubagent(root, role, readOnlyPolicy),
-                    settings.childMaxSteps(), contexts.get())
+                    role.maxTurns() > 0 ? role.maxTurns() : settings.childMaxSteps(), contexts.get())
                     .withWritingTools(BuiltinTools.WRITING_TOOLS)
                     .withStepBudget(settings.budget())
                     .withToolGate(fork ? SubAgents.this::forkMayUse : SubAgents.this::childMayUse);
@@ -1224,6 +1233,7 @@ public final class SubAgents implements Mailbox {
                 if (event instanceof AgentEvent.Failed f) {
                     synchronized (lock) {
                         child.failure = f.reason();
+                        child.hitLimit = Agent.isStepLimit(f.reason());
                     }
                 }
                 record(child, event);
