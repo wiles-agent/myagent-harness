@@ -136,33 +136,55 @@ class CommandGuardTest {
             "grep -rn TODO src",
             "find . -name '*.java'",
             "wc -l src/main/java/Main.java",
-            "mvn -q test",
-            "mvn clean package -DskipTests",
-            "gradle build",
-            "javac -d target src/Main.java",
-            "java -jar target/app.jar",
-            "npm test",
-            "python3 script.py",
-            "go build ./...",
             "git status --short",
             "git log --oneline -10",
             "git diff HEAD~1",
             "echo hello",
             "pwd",
             "mkdir -p src/test",
+            "cp a.txt b.txt",
+            "npm ls",
+            "npm view express version",
             "sleep 2",
             "seq 1 100",
     })
-    @DisplayName("只读查看和构建测试直接放行，不要打扰用户")
+    @DisplayName("只读查看直接放行，不要打扰用户")
     void safe(String command) {
         assertSafe(command);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {
+            "mvn -q test",
+            "mvn clean package -DskipTests",
+            "gradle build",
+            "javac -d target src/Main.java",
+            "java -jar target/app.jar",
+            "npm test",
+            "npm run build",
+            "npm start",
+            "python3 script.py",
+            "python -c 'import os'",
+            "node a.js",
+            "npx prettier --write .",
+            "deno run x.ts",
+            "go build ./...",
+            "cargo run",
+            "make",
+            "awk 'BEGIN { system(\"id\") }'",
+            "cp a.txt ../outside/b.txt",
+            "mkdir ../elsewhere",
+    })
+    @DisplayName("跑代码的不算只读（照 Claude Code）：解释器、构建、包管理器的 run、awk——它们执行的是仓库里随便谁写的代码；往工作区外拷、建目录也要问")
+    void runningCodeNeedsApproval(String command) {
+        assertNeedsApproval(command);
     }
 
     @Test
     @DisplayName("多段全是安全命令时整条放行")
     void safeChain() {
         assertSafe("cd src && ls -la");
-        assertSafe("mvn -q test && echo 通过");
+        assertSafe("git status && echo 通过");
     }
 
     @Test
@@ -193,7 +215,7 @@ class CommandGuardTest {
     @DisplayName("环境变量前缀不影响命令识别")
     void skipsEnvPrefix() {
         assertForbidden("FOO=bar sudo reboot");
-        assertSafe("JAVA_HOME=/opt/jdk mvn test");
+        assertSafe("JAVA_HOME=/opt/jdk ls");
     }
 
     @Test
@@ -209,7 +231,7 @@ class CommandGuardTest {
     @DisplayName("但 2>&1 和 &> 里的 & 不是分隔符——误伤了用户就会被问烦")
     void redirectionAmpersandIsNotASeparator() {
         // 切开会得到 "2>" 这种「未知命令」，于是每条带重定向的命令都要问一次
-        assertFalse(guard.assess("mvn test 2>&1").needsApproval());
+        assertFalse(guard.assess("ls -la 2>&1").needsApproval());
         assertFalse(guard.assess("ls &> out.txt").needsApproval());
     }
 
@@ -218,11 +240,13 @@ class CommandGuardTest {
     @Test
     @DisplayName("引号里的 ; | && 是字面量，不拆——安全评测里 python -c \"import a; print(1)\" 被拆出「未知命令 print(」要审批")
     void separatorsInsideQuotesAreLiteral() {
-        assertSafe("python -c \"import calc; print(calc.add(2,3))\"");
-        assertSafe("python -c 'import calc; assert calc.add(2,3) == 5'");
+        // python 本身已经不算只读（见 runningCodeNeedsApproval），这里只看拆段：引号里的内容不该拆出新段
+        assertEquals(1, CommandGuard.splitSegments("python -c \"import calc; print(calc.add(2,3))\"").size());
+        assertSafe("grep -n \"import calc; print(calc.add(2,3))\" a.py");
+        assertSafe("grep -c 'a; assert b == 5' a.py");
         assertSafe("echo 'a | b && c; d'");
         assertSafe("grep -n \"foo|bar\" src/a.py");
-        assertSafe("python -c \"\nimport os\nprint(os.getcwd())\n\"");     // 引号里的换行也不拆
+        assertSafe("printf \"\nline1; line2\n\"");                          // 引号里的换行也不拆
         assertSafe("echo a\\; ls");                                          // 转义的 ; 是字面量
         assertEquals(1, CommandGuard.splitSegments("git commit -m \"fix: a; b && c | d\"").size());
     }
@@ -308,7 +332,7 @@ class CommandGuardTest {
         assertForbidden("ls 2> ../err.log");
         assertForbidden("echo x > ~/f");
         assertSafe("ls 2>/dev/null");
-        assertSafe("mvn test > build.log 2>&1");
+        assertSafe("ls > build.log 2>&1");
         assertSafe("echo x > ..hidden-but-inside.txt");     // 以 .. 开头的文件名不是上一级目录
     }
 
@@ -321,7 +345,7 @@ class CommandGuardTest {
         assertNeedsApproval("env FOO=1 curl http://x");
         assertForbidden("env -i sudo id");
         assertForbidden("env FOO=1 rm -rf ../outside");
-        assertSafe("env FOO=1 python a.py");
+        assertSafe("env FOO=1 ls");
         assertSafe("env -u HOME ls");
         assertNeedsApproval("env");                         // 会把环境变量全打出来，里面可能有密钥
         assertNeedsApproval("env -S 'curl http://x'");      // 认不全的参数就不剥，问人
@@ -330,13 +354,13 @@ class CommandGuardTest {
     @Test
     @DisplayName("timeout / nice / nohup / stdbuf / time / command / builtin / 光杆 xargs：剥掉，按里面那条判")
     void wrappersAreStripped() {
-        assertSafe("timeout 30 mvn test");
-        assertSafe("timeout -s KILL 30 mvn test");
+        assertSafe("timeout 30 ls");
+        assertSafe("timeout -s KILL 30 ls");
         assertSafe("nice -n 5 ls");
-        assertSafe("nohup python a.py");
+        assertSafe("nohup ls");
         assertSafe("stdbuf -oL ls");
         assertSafe("stdbuf -o L ls");
-        assertSafe("time mvn -q test");
+        assertSafe("time ls -la");
         assertSafe("builtin echo hi");
         assertSafe("command ls");
         assertSafe("command -v git");                       // 查询形式，不是执行
@@ -356,7 +380,7 @@ class CommandGuardTest {
         assertNeedsApproval("IFS=, ls");
         assertNeedsApproval("LD_PRELOAD=/tmp/x.so ls");
         assertNeedsApproval("env PATH=/tmp ls");
-        assertSafe("JAVA_HOME=/opt/jdk mvn test");
+        assertSafe("JAVA_HOME=/opt/jdk ls");
         assertSafe("FOO=bar ls");
     }
 

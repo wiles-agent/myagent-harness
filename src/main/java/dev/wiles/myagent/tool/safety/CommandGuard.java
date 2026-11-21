@@ -63,24 +63,32 @@ public final class CommandGuard {
             "eval", "exec", "source", "xargs",                        // 能把任意字符串变成命令
             "osascript", "open", "defaults");
 
-    /** 只读或影响限于工作区，直接放行。 */
+    /**
+     * 只读或影响限于工作区，直接放行。
+     *
+     * <p><b>解释器、编译、构建、awk 不在这儿</b>（照 Claude Code 的只读命令集）：python、mvn test、make、npx
+     * 执行的是仓库里随便谁写的代码——测试、构建脚本、package.json 的 scripts，一个注入就能借它们做任何事。
+     * 以前它们算安全，于是 {@code python -c "…任意代码…"} 不经任何审批就跑，auto 下的审查也看不见。
+     * 现在要问人（或者交给自动审查）；常跑的那几条存成规则（{@code mvn test *}），以后就不问了。
+     */
     private static final Set<String> SAFE_COMMANDS = Set.of(
             "ls", "cat", "head", "tail", "grep", "egrep", "fgrep", "rg", "ag",
             "find", "fd", "wc", "echo", "printf", "pwd", "cd", "which", "whereis",
             "type", "file", "stat", "du", "df", "tree", "realpath", "readlink",
             "diff", "sort", "uniq", "cut", "tr", "jq", "basename", "dirname",
             "date", "sleep", "true", "false", "test", "uname", "whoami",
-            "hostname", "seq", "yes", "touch", "mkdir", "cp", "awk", "sed",
-            "java", "javac", "jar", "mvn", "gradle", "node", "npx", "deno",
-            "python", "python3", "go", "rustc", "cargo", "make", "cmake", "dotnet");
+            "hostname", "seq", "yes", "touch", "mkdir", "cp", "sed");
+
+    /** 只在工作区里写的那几个：目标指到工作区外就要问（写不坏东西，但不该写到别处去）。 */
+    private static final Set<String> WORKSPACE_WRITERS = Set.of("touch", "mkdir", "cp");
 
     /** 带后缀的变体也算，比如 mkfs.ext4、mkfs.xfs。 */
     private static final Set<String> FORBIDDEN_PREFIXES = Set.of("mkfs", "newfs");
 
-    /** 包管理器里这些子命令只是跑脚本或查信息，不装东西。 */
+    /** 包管理器里只有这些子命令是只读的：查信息。test / run / start 跑的是 package.json 里随便谁写的脚本。 */
     private static final Set<String> PACKAGE_MANAGERS = Set.of("npm", "pnpm", "yarn");
     private static final Set<String> SAFE_PACKAGE_SUBCOMMANDS = Set.of(
-            "test", "run", "start", "ls", "list", "outdated", "view", "why", "version");
+            "ls", "list", "outdated", "view", "why");
 
     /**
      * 怎么写都只读的 git 子命令。remote / branch / reflog / stash / worktree / config 不在这儿：
@@ -578,6 +586,9 @@ public final class CommandGuard {
         }
         if (APPROVAL_COMMANDS.contains(name)) {
             return CommandRisk.approval(name + " 可能修改文件、访问网络或执行外部代码");
+        }
+        if (WORKSPACE_WRITERS.contains(name) && targetsOutside(segment, name)) {
+            return CommandRisk.approval(name + " 的目标在工作区之外");
         }
         if (SAFE_COMMANDS.contains(name)) {
             return CommandRisk.safe();
