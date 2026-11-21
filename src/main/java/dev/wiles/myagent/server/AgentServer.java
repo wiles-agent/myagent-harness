@@ -288,7 +288,8 @@ public final class AgentServer extends WebSocketServer {
             subagents.readOnlyWhen(planMode::on)
                     .withDefinitions(dev.wiles.myagent.agent.AgentDefinitions.load(workspace.root()))
                     .withReadOnlyPolicy(options.readOnly())
-                    .withModelClients(model -> meter.meter(new DeepSeekClient(config.withModel(model))))
+                    .withClientFactory((model, thinking) -> meter.meter(new DeepSeekClient(
+                            config.withModel(model).withThinking(thinking))), config.thinking() != null)
                     .withSkills(this::findSkill);   // 技能库在下面才加载；派的时候才查，那时已经有了
         }
         this.subagentsRef = subagents;

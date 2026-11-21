@@ -33,6 +33,11 @@ public record Config(String apiKey, String baseUrl, String model, int contextTok
     /** 检查点默认保留 30 天，和 Claude Code 的 cleanupPeriodDays 一个数。 */
     public static final int DEFAULT_SNAPSHOT_DAYS = 30;
 
+    /** 同一个服务，换个思考开关；null 表示不变。子 agent 的 effort 用（只在会话本来就配了 thinking 时才会走到这儿）。 */
+    public Config withThinking(Boolean on) {
+        return on == null ? this : new Config(apiKey, baseUrl, model, contextTokens, on, snapshotDays);
+    }
+
     /** 同一个服务、同一把 key，换个模型。子 agent 按类型选模型时用（同一个网关上的便宜模型）。 */
     public Config withModel(String other) {
         return other == null || other.isBlank() ? this

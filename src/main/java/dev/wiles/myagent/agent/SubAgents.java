@@ -327,8 +327,18 @@ public final class SubAgents implements Mailbox {
     private volatile BooleanSupplier readOnly = () -> false;
     /** 会话是只读启动的（{@code --readonly}）：按类型派的子 agent 的系统提示词里也要明说。 */
     private volatile boolean readOnlyPolicy;
-    /** 按模型名造客户端（{@link #withModelClients}）。null 表示这个会话不能换模型，子 agent 都用默认的。 */
-    private volatile java.util.function.Function<String, LlmClient> modelClients;
+    /**
+     * 按「模型、思考开关」造客户端（{@link #withClientFactory}）：两个参数都可以是 null，表示跟主对话一样。
+     * 整个是 null 表示这个会话既不能换模型也不能调思考，子 agent 都用默认的。
+     */
+    @FunctionalInterface
+    public interface ClientFactory {
+        LlmClient create(String model, Boolean thinking);
+    }
+
+    private volatile ClientFactory clientFactory;
+    /** 服务认不认思考开关（会话自己配过 thinking 才算）。不认时 effort 不生效，免得给官方接口发它不认的字段。 */
+    private volatile boolean thinkingSupported;
     /** 能派哪些类型。默认只有内置的，{@link #withDefinitions} 换成带自定义的。 */
     private volatile AgentDefinitions definitions = AgentDefinitions.builtins();
 
@@ -372,8 +382,32 @@ public final class SubAgents implements Mailbox {
      * 见 {@link #modelFor}；不接就都用构造时给的默认客户端。
      */
     public SubAgents withModelClients(java.util.function.Function<String, LlmClient> modelClients) {
-        this.modelClients = modelClients;
+        return withClientFactory((model, thinking) -> modelClients.apply(model), false);
+    }
+
+    /**
+     * 能按模型和思考开关造客户端时接上。{@code thinkingSupported}：服务认不认思考开关——
+     * 会话自己配过 {@code thinking} 才算认（DeepSeek 官方接口不认这个字段，乱发会 400）。
+     */
+    public SubAgents withClientFactory(ClientFactory factory, boolean thinkingSupported) {
+        this.clientFactory = factory;
+        this.thinkingSupported = thinkingSupported;
         return this;
+    }
+
+    /**
+     * 这个子 agent 的思考开关，null 表示跟主对话一样。照 Claude Code 的 effort，但我们只有开和关：
+     * low 关、其余开。服务不认这个开关时一律 null；fork 也是 null——它要和主对话一模一样。
+     */
+    Boolean thinkingFor(AgentDefinition role) {
+        if (role == AgentDefinitions.FORK || role.effort() == null) {
+            return null;
+        }
+        if (!thinkingSupported) {
+            log.debug("服务不认思考开关，{} 的 effort={} 不生效", role.name(), role.effort());
+            return null;
+        }
+        return !"low".equals(role.effort());
     }
 
     /**
@@ -1294,16 +1328,18 @@ public final class SubAgents implements Mailbox {
                 return ToolResult.error("fork 不能换模型：它和你共用前缀缓存，换了模型缓存就全丢了。要换模型就派别的类型");
             }
             String model = modelFor(role, requested);
-            java.util.function.Function<String, LlmClient> byModel = modelClients;
-            if (model != null && byModel == null) {
-                log.warn("这个会话不能给子 agent 换模型，{} 照旧用默认模型", model);
+            Boolean thinking = thinkingFor(role);
+            ClientFactory factory = clientFactory;
+            if ((model != null || thinking != null) && factory == null) {
+                log.warn("这个会话不能给子 agent 换模型或调思考，{} 照旧用默认客户端", role.name());
                 model = null;
+                thinking = null;
             }
             String id = "agent-" + SEQ.incrementAndGet();
             boolean fork = role == AgentDefinitions.FORK;
             // fork：系统提示词、工具、历史都和主对话一样，前缀缓存整段命中；
             // 别的类型：自己的系统提示词、筛过的工具、从零开始（照 Claude Code）
-            Agent agent = new Agent(model == null ? clients.get() : byModel.apply(model),
+            Agent agent = new Agent(model == null && thinking == null ? clients.get() : factory.create(model, thinking),
                     fork ? forkTools(id) : toolsFor(role, id),
                     fork ? parentAgent.systemPrompt()
                             : SystemPrompt.forSubagent(root, role, readOnlyPolicy, preloadedSkills(role)),

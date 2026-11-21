@@ -76,6 +76,11 @@ class AgentDefinitionsTest {
                 AgentDefinition.parse(Path.of("p.md"), "---\ndescription: x\npermissionMode: dontAsk\n---\n").permissionMode());
         assertEquals(AgentDefinition.PermissionMode.DEFAULT,
                 AgentDefinition.parse(Path.of("p.md"), "---\ndescription: x\npermissionMode: manual\n---\n").permissionMode());
+        assertNull(b.effort());
+        for (String e : List.of("low", "medium", "high", "xhigh", "max")) {
+            assertEquals(e, AgentDefinition.parse(Path.of("e.md"), "---\ndescription: x\neffort: " + e + "\n---\n").effort());
+        }
+        assertNull(AgentDefinition.parse(Path.of("e.md"), "---\ndescription: x\neffort: extreme\n---\n"));
         assertNull(b.color());
         assertEquals("cyan", AgentDefinition.parse(Path.of("c.md"), "---\ndescription: x\ncolor: cyan\n---\n").color());
         assertNull(AgentDefinition.parse(Path.of("c.md"), "---\ndescription: x\ncolor: '#ff0000'\n---\n"),

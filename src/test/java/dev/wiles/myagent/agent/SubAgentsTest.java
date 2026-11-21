@@ -450,6 +450,36 @@ class SubAgentsTest {
     }
 
     @Test
+    @DisplayName("effort：服务支持思考开关时，low 关、其余开；不支持就不碰（不给官方接口发它不认的字段）；fork 不受影响")
+    void effortMapsToThinkingOnlyWhenSupported() throws Exception {
+        List<String> built = new CopyOnWriteArrayList<>();
+        Rig rig = new Rig();
+        rig.subagents.withClientFactory((model, thinking) -> {
+            built.add(model + "/" + thinking);
+            return new Script().reply("ok");
+        }, true).withDefinitions(AgentDefinitions.of(List.of(
+                AgentDefinition.builder("quick", "快").source("t").effort("low").build(),
+                AgentDefinition.builder("deep", "细").source("t").effort("max").build())));
+
+        rig.spawn(Map.of("message", "x", "agent_type", "quick"));
+        rig.spawn(Map.of("message", "x", "agent_type", "deep"));
+        rig.spawn(Map.of("message", "x", "agent_type", "explorer"));     // 没写 effort：不碰
+        awaitIdle(rig.subagents);
+        assertEquals(List.of("null/false", "null/true"), built, "没写 effort、也没换模型的走默认客户端");
+
+        List<String> unsupported = new CopyOnWriteArrayList<>();
+        Rig plain = new Rig(new Script().reply("ok"));
+        plain.subagents.withClientFactory((model, thinking) -> {
+            unsupported.add(model + "/" + thinking);
+            return new Script().reply("ok");
+        }, false).withDefinitions(AgentDefinitions.of(List.of(
+                AgentDefinition.builder("quick", "快").source("t").effort("low").build())));
+        plain.spawn(Map.of("message", "x", "agent_type", "quick"));
+        awaitIdle(plain.subagents);
+        assertEquals(List.of(), unsupported, "服务不认思考开关时 effort 不生效，用默认客户端");
+    }
+
+    @Test
     @DisplayName("describe：给界面的子 agent 描述——类型、名字、颜色、模型；不认识的 id 是 null")
     void describeGivesTheUiWhatItNeeds() throws Exception {
         Rig rig = new Rig(new Script().reply("ok"));

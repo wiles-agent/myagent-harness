@@ -362,6 +362,9 @@ disallowedTools: bash
   并说明结果会以通知送回；做完照常来通知。说明里会标出来，主 agent 派之前就知道别指望等它。
 - `color`：界面上显示它用的颜色（照 Claude Code 那 8 种：red / blue / green / yellow / purple / orange / pink / cyan），
   随子 agent 的每个事件发给界面（协议里的 `agent` 对象，见 protocol.md）；写别的值整份作废。
+- `effort: low | medium | high | xhigh | max`：推理力度（照 Claude Code）。我们只有一个思考开关，所以是有损映射：
+  `low` 关思考，其余开。**只在会话自己配过 `thinking` 时生效**（说明服务认这个开关）；没配就忽略——
+  DeepSeek 官方接口不认这个字段，乱发会 400。fork 不受影响，和主对话一模一样。
 - 自定义类型的 `description` 加起来超过约 15000 token 时，启动日志里会报总数（照 Claude Code）：这些描述每一轮都跟着
   `spawn_agent` 的说明发出去。只提醒、不丢定义；把描述写短，细节挪进正文（正文只进那个子 agent 自己的系统提示词）。
 - `model: <模型名>`：这种子 agent 用的模型，`inherit` 或不写就跟主对话一样。照 Claude Code，这是子 agent 控制成本的那条路：

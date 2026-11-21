@@ -218,7 +218,8 @@ public final class Headless {
                             });
             if (subagents != null) {
                 tools.registerAll(subagents.tools());
-                subagents.withModelClients(model -> meter.meter(new DeepSeekClient(config.withModel(model))))
+                subagents.withClientFactory((model, thinking) -> meter.meter(new DeepSeekClient(
+                            config.withModel(model).withThinking(thinking))), config.thinking() != null)
                         .withDefinitions(dev.wiles.myagent.agent.AgentDefinitions.forHeadless(System::getenv,
                                 workspace.root(), Path.of(System.getProperty("user.home"))));
                 // 读了自定义类型，就也接上技能库：定义里的 skills 要靠它预载。没打开就不读，和类型同一个开关
