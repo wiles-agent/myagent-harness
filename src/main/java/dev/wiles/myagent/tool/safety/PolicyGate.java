@@ -51,6 +51,14 @@ public final class PolicyGate implements ApprovalPolicy {
         return rules;
     }
 
+    /** 照 Claude Code 的 autoMode.classifyAllShell：auto 下 bash 的放行规则全部停用，每条命令都过审查。 */
+    private volatile boolean classifyAllShell;
+
+    public PolicyGate classifyAllShell(boolean on) {
+        this.classifyAllShell = on;
+        return this;
+    }
+
     @Override
     public ApprovalVerdict denyOnly(ApprovalRequest request) {
         reloadIfChanged();
@@ -87,7 +95,8 @@ public final class PolicyGate implements ApprovalPolicy {
 
         // auto 下丢掉等于任意代码执行的宽泛放行规则（照 Claude Code）：不然最危险的命令
         // 被 python * 之类的规则直接放行，审查根本看不到
-        ApprovalRules current = ApprovalScope.autoReviewer() != null ? rules.withoutArbitraryCodeAllows() : rules;
+        ApprovalRules current = ApprovalScope.autoReviewer() == null ? rules
+                : classifyAllShell ? rules.withoutBashAllows() : rules.withoutArbitraryCodeAllows();
         ApprovalRules.Outcome outcome = current.check(request);
         switch (outcome.decision()) {
             case DENY -> {

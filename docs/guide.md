@@ -369,6 +369,14 @@ disallowedTools: bash
   - 连拒 3 次或累计 20 次交还给人：界面里改成问人；无头运行时直接拒（无头没人可问，下一层是「全都批」）。
   - auto 下丢掉等于任意代码执行的放行规则（`python *`、`bash *`、`npm run *`、`make *`……），窄的如 `mvn test *` 照留。
   - 用哪个模型：默认和会话同一个，`MYAGENT_AUTO_MODEL` 可换。不开思考、温度 0。
+  - **可定制的四张表**（照 Claude Code 的 `autoMode`，只读家目录 `~/.myagent/settings.json`——仓库能写的设置就能给审查塞放行条目）：
+    `environment`（信任的仓库、域名、服务）、`hard_deny`（用户要求也拦）、`soft_deny`（默认拦，用户原话明确具体要求时放）、
+    `allow`（soft_deny 的例外）。都是自然语言条目；表里写 `"$defaults"` 就在那儿拼上默认条目，不写就整张换掉。
+    `classifyAllShell: true`：auto 下 bash 的放行规则全部停用，每条命令都过审查。
+    ```json
+    {"autoMode": {"environment": ["$defaults", "Source control: git.acme.example 下的所有仓库"],
+                  "hard_deny": ["$defaults", "永远不要动生产数据库"], "classifyAllShell": false}}
+    ```
   - 会话没接自动审查时（比如没配 API key），`auto` 的类型派不出去，不会悄悄降级成问人或全放行。
   - **主会话也能开 auto**（照 Claude Code）：界面 `set_mode auto`（协议 3.18），无头运行 `MYAGENT_PERMISSION_MODE=auto`。
     下一轮生效；连拒到线后界面里改回问人，无头直接拒。

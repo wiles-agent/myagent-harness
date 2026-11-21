@@ -218,4 +218,21 @@ class PolicyGateTest {
     private static ApprovalPolicy audited(ApprovalPolicy p) {
         return p;
     }
+
+    @Test
+    @DisplayName("classifyAllShell（照 Claude Code）：auto 下 bash 的放行规则全部停用，每条命令都过审查；文件的规则不受影响")
+    void classifyAllShellSuspendsBashAllows() {
+        store().save(ApprovalRules.of(List.of(
+                ApprovalRule.of(ApprovalKind.BASH, "mvn test *", "d"),
+                ApprovalRule.of(ApprovalKind.WRITE, "src/**", "d")), List.of()));
+        PolicyGate gate = new PolicyGate(human(ApprovalVerdict.no()), store()).classifyAllShell(true);
+        try {
+            ApprovalScope.set(null, false, request -> ApprovalVerdict.no("审查拦下"));
+            assertFalse(gate.decide(ApprovalRequest.bash("mvn test -q", "")).approved(), "auto 下 bash 规则停用");
+            assertTrue(gate.decide(ApprovalRequest.write("写", "src/a.java", "", "")).approved(), "文件规则照用");
+        } finally {
+            ApprovalScope.clear();
+        }
+        assertTrue(gate.decide(ApprovalRequest.bash("mvn test -q", "")).approved(), "不在 auto 下照常生效");
+    }
 }

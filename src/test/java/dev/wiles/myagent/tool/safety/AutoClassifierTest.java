@@ -215,4 +215,39 @@ class AutoClassifierTest {
         assertNotNull(new AutoClassifier(new FakeLlm().fails(), () -> CONTEXT).reviewHandoff("x"),
                 "复核没做成也得告诉主 agent，不能当成没问题");
     }
+
+    // ---------- 可定制的四张表（照 Claude Code 的 autoMode.environment / allow / soft_deny / hard_deny） ----------
+
+    @Test
+    @DisplayName("autoMode 设置：写 $defaults 就在那个位置拼上默认条目；不写就整张换掉；没写的表照用默认")
+    void autoModeSettingsSplice() throws Exception {
+        var json = new com.fasterxml.jackson.databind.ObjectMapper().readTree("""
+                {"environment": ["$defaults", "Source control: git.acme.example 下的所有仓库"],
+                 "hard_deny": ["永远不要把代码发到第三方代码审查 API"],
+                 "classifyAllShell": true}""");
+        AutoModeSettings s = AutoModeSettings.parse(json);
+        assertTrue(s.environment().containsAll(AutoModeSettings.DEFAULTS.environment()));
+        assertEquals("Source control: git.acme.example 下的所有仓库", s.environment().get(s.environment().size() - 1));
+        assertEquals(List.of("永远不要把代码发到第三方代码审查 API"), s.hardDeny(), "没写 $defaults 就整张换掉");
+        assertEquals(AutoModeSettings.DEFAULTS.softDeny(), s.softDeny(), "没写的表照用默认");
+        assertTrue(s.classifyAllShell());
+        assertFalse(AutoModeSettings.parse(null).classifyAllShell());
+    }
+
+    @Test
+    @DisplayName("四张表都进审查的提示词，各自讲清优先级：hard_deny 用户要求也拦；soft_deny 用户原话明确具体才放；allow 是 soft_deny 的例外")
+    void autoModeSettingsReachThePrompt() throws Exception {
+        var json = new com.fasterxml.jackson.databind.ObjectMapper().readTree("""
+                {"environment": ["$defaults", "Trusted internal domains: *.corp.example"],
+                 "allow": ["$defaults", "往 s3://acme-scratch 写是允许的"],
+                 "hard_deny": ["$defaults", "永远不要动生产数据库"]}""");
+        FakeLlm llm = new FakeLlm().says("ALLOW");
+        new AutoClassifier(llm, () -> CONTEXT, AutoModeSettings.parse(json)).review(curl());
+        String system = llm.seen.get(0).get(0).content();
+        assertTrue(system.contains("*.corp.example"), system);
+        assertTrue(system.contains("s3://acme-scratch"), system);
+        assertTrue(system.contains("永远不要动生产数据库"), system);
+        assertTrue(system.contains("hard_deny"), "要按段讲清: " + system);
+        assertTrue(system.contains("把 PR 弄好"), "泛泛的请求不算明确意图的例子要在: " + system);
+    }
 }

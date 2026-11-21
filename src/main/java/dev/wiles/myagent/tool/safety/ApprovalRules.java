@@ -159,6 +159,12 @@ public final class ApprovalRules {
         return kept.size() == allow.size() ? this : new ApprovalRules(kept, deny, ask);
     }
 
+    /** 去掉全部 bash 放行规则（autoMode.classifyAllShell 用）；写文件、联网的规则照留。 */
+    public ApprovalRules withoutBashAllows() {
+        List<ApprovalRule> kept = allow.stream().filter(r -> r.kind() != ApprovalKind.BASH).toList();
+        return kept.size() == allow.size() ? this : new ApprovalRules(kept, deny, ask);
+    }
+
     private static boolean grantsArbitraryCode(ApprovalRule rule) {
         if (rule.kind() != ApprovalKind.BASH) {
             return false;

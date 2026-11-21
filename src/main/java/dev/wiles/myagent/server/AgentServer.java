@@ -279,7 +279,8 @@ public final class AgentServer extends WebSocketServer {
         // 那条规则本身在存下来的那一刻已经记过一次了，再记一遍只会淹掉真正的决策
         // 规则 → 留底 → auto 下交给自动审查 / dontAsk 下拒 → 问人（见 AutoReviewGate）
         this.policy = new PolicyGate(audit.audited(new dev.wiles.myagent.tool.safety.AutoReviewGate(approval, true)),
-                PolicyStore.inUserHome());
+                PolicyStore.inUserHome())
+                .classifyAllShell(dev.wiles.myagent.tool.safety.AutoModeSettings.inUserHome().classifyAllShell());
         this.memory = MemoryStore.inUserHome();
         this.sessions = SessionStore.inUserHome();
         // 检查点：每条会动手的命令开跑前把工作区拍进影子仓库（不碰工作区自己的 .git）。
@@ -319,7 +320,7 @@ public final class AgentServer extends WebSocketServer {
                     // permissionMode: auto 的子 agent：要问人的操作交给自动审查，按「人说过的话」判
                     .withAutoReviewer((delegation, calls) -> new dev.wiles.myagent.tool.safety.AutoClassifier(
                             autoReviewClient(), () -> new dev.wiles.myagent.tool.safety.AutoClassifier.Context(
-                                    List.copyOf(humanMessages), delegation, calls.get())))
+                                    List.copyOf(humanMessages), delegation, calls.get()), dev.wiles.myagent.tool.safety.AutoModeSettings.inUserHome()))
                     .withMcpLauncher(servers -> {
                         // 类型定义里内联的 MCP server：和 mcp.json 里的同一种定义，派出时单独拉起
                         java.util.Map<String, dev.wiles.myagent.mcp.McpConfig.ServerSpec> specs = new java.util.LinkedHashMap<>();
@@ -844,7 +845,7 @@ public final class AgentServer extends WebSocketServer {
         return new dev.wiles.myagent.tool.safety.AutoClassifier(autoReviewClient(),
                 () -> new dev.wiles.myagent.tool.safety.AutoClassifier.Context(List.copyOf(humanMessages), null,
                         agent == null ? List.of()
-                                : dev.wiles.myagent.tool.safety.AutoClassifier.toolCallsOf(agent.conversation())));
+                                : dev.wiles.myagent.tool.safety.AutoClassifier.toolCallsOf(agent.conversation())), dev.wiles.myagent.tool.safety.AutoModeSettings.inUserHome());
     }
 
     /**

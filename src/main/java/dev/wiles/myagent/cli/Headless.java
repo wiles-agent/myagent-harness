@@ -238,7 +238,7 @@ public final class Headless {
                         .withAutoReviewer((delegation, calls) -> new dev.wiles.myagent.tool.safety.AutoClassifier(
                                 meter.meter(new DeepSeekClient(autoReviewConfig(config)).temperature(0)),
                                 () -> new dev.wiles.myagent.tool.safety.AutoClassifier.Context(
-                                        java.util.List.of(prompt), delegation, calls.get())))
+                                        java.util.List.of(prompt), delegation, calls.get()), dev.wiles.myagent.tool.safety.AutoModeSettings.inUserHome()))
                         .withMcpLauncher(servers -> {
                         // 类型定义里内联的 MCP server：和 mcp.json 里的同一种定义，派出时单独拉起
                         java.util.Map<String, dev.wiles.myagent.mcp.McpConfig.ServerSpec> specs = new java.util.LinkedHashMap<>();
@@ -296,7 +296,7 @@ public final class Headless {
                         new dev.wiles.myagent.tool.safety.AutoClassifier(
                                 meter.meter(new DeepSeekClient(autoReviewConfig(config)).temperature(0)),
                                 () -> new dev.wiles.myagent.tool.safety.AutoClassifier.Context(java.util.List.of(prompt),
-                                        null, dev.wiles.myagent.tool.safety.AutoClassifier.toolCallsOf(agent.conversation()))));
+                                        null, dev.wiles.myagent.tool.safety.AutoClassifier.toolCallsOf(agent.conversation())), dev.wiles.myagent.tool.safety.AutoModeSettings.inUserHome()));
                 summary.put("permissionMode", "auto");
             }
             if ("react+review".equals(options.onceMode())) {
