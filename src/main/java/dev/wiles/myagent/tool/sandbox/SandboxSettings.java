@@ -72,6 +72,18 @@ public record SandboxSettings(boolean enabled, boolean failIfUnavailable, boolea
         return s;
     }
 
+    /**
+     * 启动时该不该直接失败（照 Claude Code 的 failIfUnavailable）：开了、要求必须有、这个平台又用不了。
+     *
+     * @return 失败的原因；不用失败返回 null
+     */
+    public String startupProblem(Sandbox sandbox) {
+        if (!enabled || !failIfUnavailable || sandbox.unavailable() == null) {
+            return null;
+        }
+        return "沙箱设了 failIfUnavailable，但这里用不了：" + sandbox.unavailable();
+    }
+
     public static SandboxSettings inUserHome() {
         return load(Path.of(System.getProperty("user.home"), ".myagent", "settings.json"), System::getenv);
     }

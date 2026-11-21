@@ -25,6 +25,14 @@ public interface ApprovalPolicy {
 
     ApprovalVerdict decide(ApprovalRequest request);
 
+    /**
+     * 只看 deny 规则：有一条拦下就返回拒绝，否则 null。沙箱里自动放行的命令用（照 Claude Code：
+     * 沙箱里的命令不用问，但用户明说不许的照样拦）。只有规则层（{@link PolicyGate}）知道规则，别的实现不管。
+     */
+    default ApprovalVerdict denyOnly(ApprovalRequest request) {
+        return null;
+    }
+
     /** 非交互环境的安全默认值：没人能确认，那就都不批。 */
     static ApprovalPolicy denyAll() {
         return request -> ApprovalVerdict.no("当前没有可以确认的人，危险动作一律不执行。");

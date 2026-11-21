@@ -52,6 +52,15 @@ public final class PolicyGate implements ApprovalPolicy {
     }
 
     @Override
+    public ApprovalVerdict denyOnly(ApprovalRequest request) {
+        reloadIfChanged();
+        ApprovalRules.Outcome outcome = rules.check(request);
+        return outcome.decision() == ApprovalRules.Decision.DENY
+                ? ApprovalVerdict.no("被 " + store.file().getFileName() + " 里的规则挡下: " + outcome.rule().display())
+                : null;
+    }
+
+    @Override
     public ApprovalVerdict decide(ApprovalRequest request) {
         reloadIfChanged();
 

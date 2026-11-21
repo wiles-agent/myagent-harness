@@ -52,6 +52,20 @@ class SandboxTest {
         assertFalse(SandboxSettings.load(home, k -> null).enabled(), "读坏了按没开算，不能崩");
     }
 
+    @Test
+    @DisplayName("failIfUnavailable（照 Claude Code）：开了、要求必须有、平台又不支持——启动就失败，说清为什么")
+    void failIfUnavailable() throws Exception {
+        Sandbox windows = Sandbox.forPlatform("Windows 10", c -> true);
+        Sandbox linux = Sandbox.forPlatform("Linux", c -> true);
+        SandboxSettings strict = SandboxSettings.parse(M.readTree("{\"enabled\":true,\"failIfUnavailable\":true}"));
+        SandboxSettings lax = SandboxSettings.parse(M.readTree("{\"enabled\":true}"));
+        assertNotNull(strict.startupProblem(windows));
+        assertTrue(strict.startupProblem(windows).contains("WSL2"), strict.startupProblem(windows));
+        assertNull(strict.startupProblem(linux));
+        assertNull(lax.startupProblem(windows), "没要求必须有：不进沙箱照跑（Claude Code 的默认）");
+        assertNull(SandboxSettings.OFF.startupProblem(windows));
+    }
+
     // ---------- 平台 ----------
 
     @Test

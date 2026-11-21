@@ -38,6 +38,14 @@ public final class Main {
             relayServe(options);     // 公网那台机器上的角色：只对接两条连接，不起 agent
             return;
         }
+        // 沙箱设了 failIfUnavailable 而这个平台用不了：启动就停（照 Claude Code），不能悄悄在沙箱外跑
+        String sandboxProblem = dev.wiles.myagent.tool.sandbox.SandboxSettings.inUserHome()
+                .startupProblem(dev.wiles.myagent.tool.sandbox.Sandbox.current());
+        if (sandboxProblem != null) {
+            System.err.println(sandboxProblem);
+            System.exit(2);
+            return;
+        }
         if (options.once() != null) {
             System.exit(dev.wiles.myagent.cli.Headless.run(options));
             return;

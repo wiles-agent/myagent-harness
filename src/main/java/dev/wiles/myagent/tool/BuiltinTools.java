@@ -128,6 +128,8 @@ public final class BuiltinTools {
      */
     public static ToolRegistry createDefault(Workspace workspace, ApprovalPolicy approval,
                                              MemoryStore memory, FileWriteGuard writeGuard) {
+        // 沙箱（照 Claude Code）：设置只读家目录；没开或平台不支持时 bash / run_tests 照常跑
+        var sandbox = dev.wiles.myagent.tool.sandbox.SandboxRunner.forHost(approval);
         ToolRegistry registry = new ToolRegistry()
                 .register(new ReadFileTool(workspace))
                 .register(new WriteFileTool(workspace, writeGuard, approval))
@@ -135,8 +137,8 @@ public final class BuiltinTools {
                 .register(new ListDirTool(workspace))
                 .register(new GrepTool(workspace))
                 .register(new GlobTool(workspace))
-                .register(new BashTool(workspace, new CommandGuard(), approval))
-                .register(new RunTestsTool(workspace))
+                .register(new BashTool(workspace, new CommandGuard(), approval, sandbox))
+                .register(new RunTestsTool(workspace, sandbox))
                 .register(new CreateProjectTool(workspace, writeGuard, approval))
                 .register(new WebSearchTool(Web.CLIENT))
                 .register(new WebFetchTool(Web.CLIENT));

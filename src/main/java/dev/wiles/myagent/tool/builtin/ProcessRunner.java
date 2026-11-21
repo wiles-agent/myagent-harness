@@ -36,14 +36,24 @@ final class ProcessRunner {
      * 所以 Windows 上把命令写进临时脚本、{@code sh <脚本>} 跑：命令文本根本不经过那条命令行。
      */
     static Outcome runShell(String command, Path dir, int timeoutSeconds) throws IOException {
+        return runShell(command, argv -> run(argv, dir, timeoutSeconds));
+    }
+
+    /** 拿着「用 sh 跑这段命令」的 argv 去启动——沙箱要在这一步包一层。 */
+    @FunctionalInterface
+    interface Launcher {
+        Outcome launch(List<String> argv) throws IOException;
+    }
+
+    static Outcome runShell(String command, Launcher launcher) throws IOException {
         if (!WINDOWS) {
-            return run(List.of("sh", "-c", command), dir, timeoutSeconds);
+            return launcher.launch(List.of("sh", "-c", command));
         }
         Path script = java.nio.file.Files.createTempFile("myagent-cmd-", ".sh");
         try {
             java.nio.file.Files.writeString(script, command, java.nio.charset.StandardCharsets.UTF_8);
             // 正斜杠：Git 的 sh 认 C:/...，不用再操心反斜杠转义
-            return run(List.of("sh", script.toString().replace('\\', '/')), dir, timeoutSeconds);
+            return launcher.launch(List.of("sh", script.toString().replace('\\', '/')));
         } finally {
             java.nio.file.Files.deleteIfExists(script);
         }

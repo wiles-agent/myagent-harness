@@ -46,9 +46,19 @@ public final class RunTestsTool implements Tool {
     private static final String META = ";&|<>`$(){}*?~!#\\'\"\n\r";
 
     private final Workspace workspace;
+    private final dev.wiles.myagent.tool.sandbox.SandboxRunner sandbox;
 
     public RunTestsTool(Workspace workspace) {
+        this(workspace, dev.wiles.myagent.tool.sandbox.SandboxRunner.off());
+    }
+
+    /**
+     * @param sandbox 测试执行的是仓库里随便谁写的代码，和 bash 一样进沙箱（照 Claude Code：沙箱管 shell 命令
+     *                和它起的进程）。这里本来就不问人，沙箱只是多一道边界
+     */
+    public RunTestsTool(Workspace workspace, dev.wiles.myagent.tool.sandbox.SandboxRunner sandbox) {
         this.workspace = workspace;
+        this.sandbox = sandbox;
     }
 
     @Override
@@ -100,7 +110,9 @@ public final class RunTestsTool implements Tool {
         long startedAt = System.currentTimeMillis();
         ProcessRunner.Outcome out;
         try {
-            out = ProcessRunner.run(argv, workspace.root(), timeout);
+            out = sandbox.active()
+                    ? sandbox.run(argv, workspace.root(), wrapped -> ProcessRunner.run(wrapped, workspace.root(), timeout))
+                    : ProcessRunner.run(argv, workspace.root(), timeout);
         } catch (IOException e) {
             return ToolResult.error("无法启动命令: " + e.getMessage());
         }

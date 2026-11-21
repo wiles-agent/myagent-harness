@@ -35,6 +35,7 @@ public final class BashTool implements Tool {
     private final Workspace workspace;
     private final CommandGuard guard;
     private final ApprovalPolicy approval;
+    private final dev.wiles.myagent.tool.sandbox.SandboxRunner sandbox;
 
     /** 不指定审批策略时一律拒绝：非交互环境没人能点头，默认就该是最安全的那档。 */
     public BashTool(Workspace workspace) {
@@ -42,9 +43,16 @@ public final class BashTool implements Tool {
     }
 
     public BashTool(Workspace workspace, CommandGuard guard, ApprovalPolicy approval) {
+        this(workspace, guard, approval, dev.wiles.myagent.tool.sandbox.SandboxRunner.off());
+    }
+
+    /** @param sandbox 沙箱（照 Claude Code）；没开或这个平台用不了时命令照常跑、照常审批 */
+    public BashTool(Workspace workspace, CommandGuard guard, ApprovalPolicy approval,
+                    dev.wiles.myagent.tool.sandbox.SandboxRunner sandbox) {
         this.workspace = workspace;
         this.guard = guard;
         this.approval = approval;
+        this.sandbox = sandbox;
     }
 
     @Override
@@ -59,8 +67,14 @@ public final class BashTool implements Tool {
                 + "禁止用它查看目录或读写文件——列目录必须用 list_dir，读文件必须用 read_file，"
                 + "改已有文件用 edit_file，新建文件用 write_file。"
                 + "不要执行需要交互输入的命令。"
-                + "删除文件、访问网络、安装依赖等操作会先征求用户同意，可能被拒绝。";
+                + "删除文件、访问网络、安装依赖等操作会先征求用户同意，可能被拒绝。"
+                + (sandbox.active() ? SANDBOX_NOTE : "");
     }
+
+    private static final String SANDBOX_NOTE = "\n命令在沙箱里跑：只能写工作区和临时目录，"
+            + "受保护的路径（.git/hooks、.myagent 等）只读；联网只能走代理，不在放行名单里的域名会被拦或要批。"
+            + "沙箱里的命令一般不用等批准。确实因为沙箱的限制跑不通（不是命令本身的错），"
+            + "可以带 dangerously_disable_sandbox: true 在沙箱外重跑——那要用户单独批准，别拿它绕开该有的限制。";
 
     @Override
     public String parametersSchema() {
@@ -75,11 +89,37 @@ public final class BashTool implements Tool {
                     "timeout_seconds": {
                       "type": "integer",
                       "description": "超时秒数，默认 30，最大 300"
+                    },
+                    "dangerously_disable_sandbox": {
+                      "type": "boolean",
+                      "description": "只在沙箱开着时有用：在沙箱外跑这条命令，要用户单独批准"
                     }
                   },
                   "required": ["command"]
                 }
                 """;
+    }
+
+    /**
+     * 沙箱里的命令怎么批（照 Claude Code 的 auto-allow）：不问人，但 deny 规则照样拦；
+     * auto 下照样过审查（auto-allow 不跳过它）；设置里关了 autoAllow 就照常走审批。
+     *
+     * @return 拦下时的错误；放行返回 null
+     */
+    private ToolResult approveSandboxed(String command, CommandRisk risk) {
+        if (!risk.needsApproval()) {
+            return null;
+        }
+        ApprovalRequest request = ApprovalRequest.bash(command, risk.reason());
+        boolean autoMode = dev.wiles.myagent.tool.safety.ApprovalScope.autoReviewer() != null;
+        ApprovalVerdict verdict = sandbox.settings().autoAllow() && !autoMode
+                ? approval.denyOnly(request)
+                : approval.decide(request);
+        if (verdict == null || verdict.approved()) {
+            return null;
+        }
+        return ToolResult.error(verdict.deniedMessage(
+                "用户拒绝执行这条命令（" + risk.reason() + "）。请换一种做法，或者先向用户说明为什么需要它。"));
     }
 
     @Override
@@ -94,7 +134,25 @@ public final class BashTool implements Tool {
             return ToolResult.error("这条命令被安全策略拒绝执行。原因: " + risk.reason()
                     + "。请改用其它方式完成目标，不要重试同样的命令。");
         }
-        if (risk.needsApproval()) {
+        // 沙箱（照 Claude Code）：开着且用得上时命令进沙箱；要在沙箱外跑得单独批，设置能把这条路关掉
+        boolean wantsOut = Args.optBoolean(args, "dangerously_disable_sandbox", false)
+                && sandbox.settings().allowUnsandboxedCommands();
+        boolean sandboxed = sandbox.active() && !wantsOut;
+        if (sandboxed) {
+            ToolResult refused = approveSandboxed(command, risk);
+            if (refused != null) {
+                return refused;
+            }
+        } else if (sandbox.active()) {
+            // 沙箱外重跑：哪怕是 echo 也问——问的是「出沙箱」这件事本身
+            String reason = "要在沙箱外执行（dangerously_disable_sandbox）"
+                    + (risk.needsApproval() ? "；" + risk.reason() : "");
+            ApprovalVerdict verdict = approval.decide(ApprovalRequest.bash(command, reason));
+            if (!verdict.approved()) {
+                return ToolResult.error(verdict.deniedMessage("用户没批准在沙箱外执行这条命令。"
+                        + "在沙箱里换一种做法；确实做不到就说明原因，交给用户。"));
+            }
+        } else if (risk.needsApproval()) {
             ApprovalVerdict verdict = approval.decide(ApprovalRequest.bash(command, risk.reason()));
             if (!verdict.approved()) {
                 return ToolResult.error(verdict.deniedMessage(
@@ -106,7 +164,10 @@ public final class BashTool implements Tool {
         long startedAt = System.currentTimeMillis();
         ProcessRunner.Outcome out;
         try {
-            out = ProcessRunner.runShell(command, workspace.root(), timeout);
+            out = sandboxed
+                    ? ProcessRunner.runShell(command, argv -> sandbox.run(argv, workspace.root(),
+                            wrapped -> ProcessRunner.run(wrapped, workspace.root(), timeout)))
+                    : ProcessRunner.runShell(command, workspace.root(), timeout);
         } catch (IOException e) {
             return ToolResult.error("无法启动命令: " + e.getMessage());
         }
