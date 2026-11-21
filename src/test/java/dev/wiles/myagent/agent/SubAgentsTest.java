@@ -455,6 +455,84 @@ class SubAgentsTest {
         assertEquals(List.of("read_file"), worker.menus.get(1));
     }
 
+    private static void git(java.nio.file.Path dir, String... args) throws Exception {
+        List<String> cmd = new ArrayList<>(List.of("git", "-C", dir.toString()));
+        cmd.addAll(List.of(args));
+        Process p = new ProcessBuilder(cmd).redirectErrorStream(true).start();
+        String out = new String(p.getInputStream().readAllBytes());
+        assertEquals(0, p.waitFor(), "git " + String.join(" ", args) + ": " + out);
+    }
+
+    /** 一个往自己根目录里写文件的 write_file：worktree 隔离测的就是「写到了哪个根目录」。 */
+    static Tool writerAt(java.nio.file.Path root) {
+        return new Tool() {
+            public String name() { return "write_file"; }
+            public String description() { return "write_file"; }
+            public String parametersSchema() { return "{\"type\":\"object\",\"properties\":{}}"; }
+            public ToolResult execute(JsonNode args) {
+                try {
+                    java.nio.file.Files.writeString(root.resolve(args.path("path").asText()), args.path("content").asText());
+                    return ToolResult.ok("写了");
+                } catch (java.io.IOException e) {
+                    return ToolResult.error(e.getMessage());
+                }
+            }
+        };
+    }
+
+    @Test
+    @DisplayName("isolation: worktree——在工作区外的临时 worktree 里改，主工作区不动；通知带路径和分支；有改动的留、没改的收")
+    void worktreeIsolation(@org.junit.jupiter.api.io.TempDir java.nio.file.Path tmp) throws Exception {
+        java.nio.file.Path ws = java.nio.file.Files.createDirectories(tmp.resolve("ws"));
+        git(ws, "init", "-q", "-b", "main");
+        git(ws, "config", "user.email", "t@example.com");
+        git(ws, "config", "user.name", "t");
+        java.nio.file.Files.writeString(ws.resolve("a.txt"), "v1");
+        git(ws, "add", "a.txt");
+        git(ws, "commit", "-q", "-m", "init");
+
+        List<java.nio.file.Path> roots = new CopyOnWriteArrayList<>();
+        Script changer = new Script().call("write_file", "{\"path\":\"a.txt\",\"content\":\"v2\"}").reply("改好了");
+        Script idle = new Script().reply("看了，没改");
+        Rig rig = new Rig(ws, SubAgents.Mode.ON, 0, SubAgents.Settings.defaults(0), changer, idle);
+        rig.subagents.withIsolatedTools(r -> {
+            roots.add(r);
+            return new ToolRegistry().register(stub("read_file")).register(writerAt(r));
+        }).withDefinitions(AgentDefinitions.of(List.of(AgentDefinition.builder("iso", "隔离着改").source("t")
+                .isolation(AgentDefinition.Isolation.WORKTREE).build())));
+
+        rig.spawn(Map.of("message", "改 a", "agent_type", "iso"));
+        awaitIdle(rig.subagents);
+        java.nio.file.Path wt = roots.get(0);
+        assertEquals("v1", java.nio.file.Files.readString(ws.resolve("a.txt")), "主工作区不该被动");
+        assertEquals("v2", java.nio.file.Files.readString(wt.resolve("a.txt")));
+        assertFalse(wt.toAbsolutePath().normalize().startsWith(ws.toAbsolutePath().normalize()),
+                "worktree 不放在工作区里，免得主 agent 搜代码搜到两份");
+        String notice = String.join("\n", rig.subagents.drain());
+        assertTrue(notice.contains("myagent/agent-"), "要说清分支，主 agent 才知道去哪儿合并: " + notice);
+
+        rig.spawn(Map.of("message", "看看", "agent_type", "iso"));
+        awaitIdle(rig.subagents);
+        java.nio.file.Path untouched = roots.get(1);
+        rig.subagents.stopAll(5_000);         // 无头运行退出前只走这条，不走 shutdown
+        assertTrue(java.nio.file.Files.exists(wt), "有改动的 worktree 留着，等主 agent 合并");
+        assertFalse(java.nio.file.Files.exists(untouched), "没改动的自动收掉（无头运行退出前也得收，不然每跑一次留一个）");
+        rig.subagents.shutdown();
+        assertTrue(java.nio.file.Files.exists(wt));
+    }
+
+    @Test
+    @DisplayName("isolation: worktree 要求工作区是 git 仓库，不是就派不出去")
+    void worktreeNeedsGit(@org.junit.jupiter.api.io.TempDir java.nio.file.Path ws) throws Exception {
+        Rig rig = new Rig(ws, SubAgents.Mode.ON, 0, SubAgents.Settings.defaults(0));
+        rig.subagents.withIsolatedTools(r -> new ToolRegistry().register(stub("read_file")))
+                .withDefinitions(AgentDefinitions.of(List.of(AgentDefinition.builder("iso", "隔离着改").source("t")
+                        .isolation(AgentDefinition.Isolation.WORKTREE).build())));
+        ToolResult r = rig.exec("spawn_agent", Map.of("message", "x", "agent_type", "iso"));
+        assertFalse(r.ok());
+        assertTrue(r.content().contains("git"), r.content());
+    }
+
     @Test
     @DisplayName("嵌套（深度 2）：子 agent 有派遣工具、最深一层没有；子 agent 等得到孙子的结果；顶层 describe 认得孙子")
     void nestedSpawningUpToTheDepthLimit() throws Exception {

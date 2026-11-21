@@ -291,6 +291,10 @@ public final class AgentServer extends WebSocketServer {
                     .withClientFactory((model, thinking) -> meter.meter(new DeepSeekClient(
                             config.withModel(model).withThinking(thinking))), config.thinking() != null)
                     .withSkills(this::findSkill)    // 技能库在下面才加载；派的时候才查，那时已经有了
+                    // isolation: worktree 的子 agent：同一个审批策略、同一份记忆，根目录换成它的 worktree
+                    .withIsolatedTools(wtRoot -> options.readOnly()
+                            ? BuiltinTools.createReadOnly(new Workspace(wtRoot), memory)
+                            : BuiltinTools.createDefault(new Workspace(wtRoot), policy, memory, new FileWriteGuard()))
                     .withMcpLauncher(servers -> {
                         // 类型定义里内联的 MCP server：和 mcp.json 里的同一种定义，派出时单独拉起
                         java.util.Map<String, dev.wiles.myagent.mcp.McpConfig.ServerSpec> specs = new java.util.LinkedHashMap<>();

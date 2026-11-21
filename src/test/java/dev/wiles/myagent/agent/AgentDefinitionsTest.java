@@ -92,6 +92,10 @@ class AgentDefinitionsTest {
         assertNull(AgentDefinition.parse(Path.of("h.md"),
                         "---\ndescription: x\nhooks:\n  PreToolUse:\n    - matcher: \"(\"\n      hooks:\n        - command: x\n---\n"),
                 "matcher 写坏了：写了 hook 却不生效比没写更糟，整份作废");
+        assertEquals(AgentDefinition.Isolation.NONE, b.isolation());
+        assertEquals(AgentDefinition.Isolation.WORKTREE,
+                AgentDefinition.parse(Path.of("i.md"), "---\ndescription: x\nisolation: worktree\n---\n").isolation());
+        assertNull(AgentDefinition.parse(Path.of("i.md"), "---\ndescription: x\nisolation: container\n---\n"));
         assertNull(b.effort());
         for (String e : List.of("low", "medium", "high", "xhigh", "max")) {
             assertEquals(e, AgentDefinition.parse(Path.of("e.md"), "---\ndescription: x\neffort: " + e + "\n---\n").effort());

@@ -381,6 +381,10 @@ disallowedTools: bash
   - **内联定义**（`- playwright: {command: npx, args: [...]}`，和 `mcp.json` 里同一种定义）：派出时单独拉起、只给它，
     会话结束（或无头运行退出前）一起关。浏览器类工具和主会话一样套按站点审批。**只认家目录里的定义**：
     MCP 配置本来就只读家目录的 `mcp.json`，工作区里的定义写了内联整份作废——那等于让仓库在别人机器上起进程。
+- `isolation: worktree`：它在一个临时 git worktree 里干活（照 Claude Code），改动不碰你的工作区。worktree 放在系统临时目录
+  （不放工作区里，免得主 agent 搜代码搜到两份），从**默认分支**拉一个 `myagent/agent-N` 分支（照 Claude Code，不从当前 HEAD 拉；
+  找不到默认分支才退回 HEAD）。它的读写文件和 bash 都绑在 worktree 上，审批照常。通知里带 worktree 路径和分支，要用就合并过来；
+  关掉它、会话结束、无头运行退出前，**没改动的自动收掉，有改动的留着**等你合并。工作区不是 git 仓库时派不出去。
 - 自定义类型的 `description` 加起来超过约 15000 token 时，启动日志里会报总数（照 Claude Code）：这些描述每一轮都跟着
   `spawn_agent` 的说明发出去。只提醒、不丢定义；把描述写短，细节挪进正文（正文只进那个子 agent 自己的系统提示词）。
 - `model: <模型名>`：这种子 agent 用的模型，`inherit` 或不写就跟主对话一样。照 Claude Code，这是子 agent 控制成本的那条路：

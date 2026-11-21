@@ -292,6 +292,8 @@ public final class SubAgents implements Mailbox {
         boolean hitLimit;
         /** 它自己派出去的子 agent（没到最深一层才有）。它被关掉、会话结束时一起收。 */
         SubAgents nested;
+        /** {@code isolation: worktree} 时它干活的那个 worktree；否则 null。 */
+        GitWorktree worktree;
 
         // ---- 框架看到的事实（写进通知，不靠它自己说） ----
         /** 写文件工具成功写过的路径。bash 里写的看不到。 */
@@ -403,6 +405,14 @@ public final class SubAgents implements Mailbox {
     }
 
     private volatile McpLauncher mcpLauncher;
+
+    /** 给一个根目录，造一套绑在它上面的内置工具（读写文件、bash……）。worktree 隔离的子 agent 用。 */
+    @FunctionalInterface
+    public interface IsolatedTools {
+        ToolRegistry forRoot(Path root);
+    }
+
+    private volatile IsolatedTools isolatedTools;
     /** 为子 agent 内联拉起的 server，会话结束时一起关。 */
     private final List<McpHandle> launched = new java.util.concurrent.CopyOnWriteArrayList<>();
     /** 服务认不认思考开关（会话自己配过 thinking 才算）。不认时 effort 不生效，免得给官方接口发它不认的字段。 */
@@ -459,6 +469,7 @@ public final class SubAgents implements Mailbox {
         this.thinkingSupported = up.thinkingSupported;
         this.skills = up.skills;
         this.mcpLauncher = up.mcpLauncher;
+        this.isolatedTools = up.isolatedTools;
         tree.members.add(this);
     }
 
@@ -600,6 +611,12 @@ public final class SubAgents implements Mailbox {
         return out.toString();
     }
 
+    /** 接上「按根目录造工具」的办法：{@code isolation: worktree} 的子 agent 用它拿一套绑在 worktree 上的工具。 */
+    public SubAgents withIsolatedTools(IsolatedTools tools) {
+        this.isolatedTools = tools;
+        return this;
+    }
+
     /** 接上拉起 MCP server 的办法：类型定义里内联的 mcpServers 派出时用它起，只给那个子 agent。 */
     public SubAgents withMcpLauncher(McpLauncher launcher) {
         this.mcpLauncher = launcher;
@@ -737,8 +754,9 @@ public final class SubAgents implements Mailbox {
         try {
             return awaitStopped(graceMillis);
         } finally {
-            // 无头运行退出前只走这里不走 shutdown：各层内联拉起的 MCP 进程也得在这儿关
+            // 无头运行退出前只走这里不走 shutdown：各层内联拉起的 MCP 进程、没改动的 worktree 也得在这儿收
             tree.members.forEach(SubAgents::closeLaunched);
+            tree.members.forEach(SubAgents::cleanWorktrees);
         }
     }
 
@@ -835,6 +853,7 @@ public final class SubAgents implements Mailbox {
     @Override
     public void shutdown() {
         List<SubAgents> below = new ArrayList<>();
+        List<GitWorktree> trees = new ArrayList<>();
         synchronized (lock) {
             for (Child child : children.values()) {
                 if (!child.closed) {
@@ -847,6 +866,9 @@ public final class SubAgents implements Mailbox {
                 if (child.nested != null) {
                     below.add(child.nested);
                 }
+                if (child.worktree != null) {
+                    trees.add(child.worktree);
+                }
             }
             children.clear();
             notices.clear();
@@ -855,10 +877,24 @@ public final class SubAgents implements Mailbox {
             lock.notifyAll();
         }
         below.forEach(SubAgents::shutdown);      // 锁外收下一层：不拿着自己的锁去拿别人的
+        trees.forEach(GitWorktree::removeIfClean);   // 锁外跑 git：没改动的收掉，有改动的留着等合并
         closeLaunched();
         if (level > 1) {
             tree.members.remove(this);          // 嵌套的这一层收了就从树上摘掉；顶层留着
         }
+    }
+
+    /** 这一层已经停下的子 agent 里，没改动的 worktree 收掉。锁里只拿清单，git 在锁外跑。 */
+    private void cleanWorktrees() {
+        List<GitWorktree> idle = new ArrayList<>();
+        synchronized (lock) {
+            for (Child c : children.values()) {
+                if (c.worktree != null && !c.running) {
+                    idle.add(c.worktree);
+                }
+            }
+        }
+        idle.forEach(GitWorktree::removeIfClean);
     }
 
     /** 为子 agent 内联拉起的 MCP server 全关掉：它们是子进程，不关就是孤儿。 */
@@ -1103,6 +1139,11 @@ public final class SubAgents implements Mailbox {
         if (child.name != null) {
             body.put("name", child.name);
         }
+        if (child.worktree != null) {
+            // 它的改动不在你的工作区里：在这个 worktree / 分支上。要用的话合并过来（git merge 这个分支，或者挑着拿）
+            body.putObject("worktree").put("path", String.valueOf(child.worktree.path()))
+                    .put("branch", child.worktree.branch());
+        }
         body.set("status", status(child));
         body.set("observed", observed(child));
         return NOTICE_TAG + "\n" + NO_AUTHORITY + "\n" + body.toPrettyString() + "\n</subagent_notification>";
@@ -1245,6 +1286,15 @@ public final class SubAgents implements Mailbox {
      * 写文件的工具换成以这个子 agent 为写入方的那一版。
      */
     private ToolRegistry toolsFor(AgentDefinition role, String id) {
+        return toolsFor(role, id, null);
+    }
+
+    /**
+     * @param isolatedRoot 不为 null 时（worktree 隔离），菜单里的内置工具换成绑在这个根目录上的那一套；
+     *                     写入归属不用管——那是它自己的一份副本，和别人撞不上
+     */
+    private ToolRegistry toolsFor(AgentDefinition role, String id, Path isolatedRoot) {
+        ToolRegistry rooted = isolatedRoot == null ? null : isolatedTools.forRoot(isolatedRoot);
         List<String> available = inheritable();
         Set<String> menu = new java.util.LinkedHashSet<>(role.resolve(available));
         if (role.memory() == AgentDefinition.Memory.NONE) {
@@ -1263,6 +1313,10 @@ public final class SubAgents implements Mailbox {
         ToolRegistry narrowed = new ToolRegistry();
         for (Tool tool : allTools.all()) {
             if (!menu.contains(tool.name())) {
+                continue;
+            }
+            if (rooted != null && rooted.get(tool.name()) != null) {
+                narrowed.register(rooted.get(tool.name()));
                 continue;
             }
             narrowed.register(tool instanceof OwnedWrite w ? new OwnedWrite(w.inner, id)
@@ -1622,7 +1676,21 @@ public final class SubAgents implements Mailbox {
             boolean fork = role == AgentDefinitions.FORK;
             // fork：系统提示词、工具、历史都和主对话一样，前缀缓存整段命中；
             // 别的类型：自己的系统提示词、筛过的工具、从零开始（照 Claude Code）
-            ToolRegistry childTools = fork ? forkTools(id) : toolsFor(role, id);
+            GitWorktree worktree = null;
+            if (!fork && role.isolation() == AgentDefinition.Isolation.WORKTREE) {
+                if (isolatedTools == null) {
+                    return ToolResult.error("这个会话不支持 worktree 隔离，" + role.name() + " 派不出去");
+                }
+                if (!GitWorktree.isRepo(root)) {
+                    return ToolResult.error(role.name() + " 是 isolation: worktree，要求工作区是 git 仓库；这里不是。换一种类型派，或者自己做");
+                }
+                try {
+                    worktree = GitWorktree.create(root, id);
+                } catch (java.io.IOException e) {
+                    return ToolResult.error("给 " + role.name() + " 建 worktree 失败: " + e.getMessage());
+                }
+            }
+            ToolRegistry childTools = fork ? forkTools(id) : toolsFor(role, id, worktree == null ? null : worktree.path());
             // 没到最深一层：给它自己的一层，派遣工具进它的菜单（fork 不再往下派，照 Claude Code「fork 不能再 fork」）
             SubAgents nested = !fork && level < settings.maxDepth() ? new SubAgents(SubAgents.this, childTools, id) : null;
             if (nested != null) {
@@ -1631,7 +1699,8 @@ public final class SubAgents implements Mailbox {
             Agent agent = new Agent(model == null && thinking == null ? clients.get() : factory.create(model, thinking),
                     childTools,
                     fork ? parentAgent.systemPrompt()
-                            : SystemPrompt.forSubagent(root, role, readOnlyPolicy, preloadedSkills(role)),
+                            : SystemPrompt.forSubagent(worktree == null ? root : worktree.path(), role, readOnlyPolicy,
+                                    preloadedSkills(role)),
                     role.maxTurns() > 0 ? role.maxTurns() : settings.childMaxSteps(), contexts.get())
                     .withWritingTools(BuiltinTools.WRITING_TOOLS)
                     .withStepBudget(settings.budget())
@@ -1646,6 +1715,7 @@ public final class SubAgents implements Mailbox {
             child.model = model;
             child.name = name;
             child.nested = nested;
+            child.worktree = worktree;
             if (nested != null) {
                 nested.parent = agent;
             }
@@ -1664,6 +1734,9 @@ public final class SubAgents implements Mailbox {
                 if (!tree.tryReserve(settings.maxThreads())) {      // 两次检查之间别人（别的层）也派了
                     if (nested != null) {
                         nested.shutdown();
+                    }
+                    if (worktree != null) {
+                        worktree.removeIfClean();
                     }
                     return ToolResult.error("已经开着 " + settings.maxThreads() + " 个子 agent 了（各层一起算），先 close_agent 关掉不需要的");
                 }
@@ -1863,6 +1936,9 @@ public final class SubAgents implements Mailbox {
                     tree.release();
                     if (child.nested != null) {
                         child.nested.shutdown();        // 它派出去的一起收，名额一起还
+                    }
+                    if (child.worktree != null && !child.running) {
+                        child.worktree.removeIfClean();     // 没改动的 worktree 收掉；有改动的留给主 agent 合并
                     }
                     child.beforeClose = child.state;
                     child.queued.clear();

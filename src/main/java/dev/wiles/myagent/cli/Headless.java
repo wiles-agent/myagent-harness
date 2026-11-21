@@ -222,6 +222,8 @@ public final class Headless {
                             config.withModel(model).withThinking(thinking))), config.thinking() != null)
                         .withDefinitions(dev.wiles.myagent.agent.AgentDefinitions.forHeadless(System::getenv,
                                 workspace.root(), Path.of(System.getProperty("user.home"))))
+                        .withIsolatedTools(wtRoot -> BuiltinTools.createDefault(
+                                new dev.wiles.myagent.tool.Workspace(wtRoot), ApprovalPolicy.approveAll(), memory))
                         .withMcpLauncher(servers -> {
                         // 类型定义里内联的 MCP server：和 mcp.json 里的同一种定义，派出时单独拉起
                         java.util.Map<String, dev.wiles.myagent.mcp.McpConfig.ServerSpec> specs = new java.util.LinkedHashMap<>();

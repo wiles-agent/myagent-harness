@@ -53,13 +53,30 @@ import java.util.regex.Pattern;
  * @param mcpRefs         照 Claude Code 的 {@code mcpServers} 里按名字引用的：会话 mcp.json 里已配的 server，
  *                        它的工具照给这种子 agent（{@code tools} 白名单没列也给）
  * @param mcpInline       {@code mcpServers} 里内联定义的：派出时单独拉起、只给它用。要起进程，只认家目录里的定义
+ * @param isolation       照 Claude Code 的 {@code isolation}：{@code worktree} 让它在临时 git worktree 里干活，见 {@link GitWorktree}
  */
 public record AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
                               String rules, boolean ownsRequired, String source, String model, int maxTurns,
                               PermissionMode permissionMode, List<String> skills, Memory memory,
                               boolean background, String color, String effort,
                               com.fasterxml.jackson.databind.JsonNode hooks,
-                              List<String> mcpRefs, Map<String, com.fasterxml.jackson.databind.JsonNode> mcpInline) {
+                              List<String> mcpRefs, Map<String, com.fasterxml.jackson.databind.JsonNode> mcpInline,
+                              Isolation isolation) {
+
+    /** 子 agent 在哪儿干活：和大家同一个工作区（默认），或者自己的临时 git worktree。 */
+    public enum Isolation {
+        NONE, WORKTREE;
+
+        static Isolation parse(String raw) {
+            if (raw == null || raw.isBlank()) {
+                return NONE;
+            }
+            if ("worktree".equals(raw.strip())) {
+                return WORKTREE;
+            }
+            throw new IllegalArgumentException("isolation 只认 worktree，收到: " + raw);
+        }
+    }
 
     static final Pattern MCP_NAME = Pattern.compile("[A-Za-z0-9_-]{1,64}");
 
@@ -193,13 +210,15 @@ public record AgentDefinition(String name, String description, List<String> tool
             });
         }
         mcpInline = java.util.Collections.unmodifiableMap(inline);      // 保序：工具菜单的顺序要稳定
+        isolation = isolation == null ? Isolation.NONE : isolation;
     }
 
     /** 只有名字、描述、工具、规矩这几样的常见写法；别的字段取默认。 */
     public AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
                            String rules, boolean ownsRequired, String source) {
         this(name, description, tools, disallowedTools, rules, ownsRequired, source,
-                null, 0, PermissionMode.DEFAULT, List.of(), Memory.NONE, false, null, null, null, List.of(), Map.of());
+                null, 0, PermissionMode.DEFAULT, List.of(), Memory.NONE, false, null, null, null, List.of(), Map.of(),
+                Isolation.NONE);
     }
 
     /**
@@ -229,6 +248,7 @@ public record AgentDefinition(String name, String description, List<String> tool
         private com.fasterxml.jackson.databind.JsonNode hooks;
         private List<String> mcpRefs = List.of();
         private Map<String, com.fasterxml.jackson.databind.JsonNode> mcpInline = Map.of();
+        private Isolation isolation = Isolation.NONE;
 
         private Builder(String name, String description) {
             this.name = name;
@@ -251,11 +271,12 @@ public record AgentDefinition(String name, String description, List<String> tool
         public Builder hooks(com.fasterxml.jackson.databind.JsonNode v) { this.hooks = v; return this; }
         public Builder mcpRefs(List<String> v) { this.mcpRefs = v; return this; }
         public Builder mcpInline(Map<String, com.fasterxml.jackson.databind.JsonNode> v) { this.mcpInline = v; return this; }
+        public Builder isolation(Isolation v) { this.isolation = v; return this; }
 
         public AgentDefinition build() {
             return new AgentDefinition(name, description, tools, disallowedTools, rules, ownsRequired, source,
                     model, maxTurns, permissionMode, skills, memory, background, color, effort, hooks,
-                    mcpRefs, mcpInline);
+                    mcpRefs, mcpInline, isolation);
         }
     }
 
@@ -371,6 +392,7 @@ public record AgentDefinition(String name, String description, List<String> tool
                     .mcpRefs(mcpRefs(dev.wiles.myagent.config.MiniYaml.frontMatterField(text, "mcpServers")))
                     .mcpInline(mcpInline(dev.wiles.myagent.config.MiniYaml.frontMatterField(text, "mcpServers"),
                             fromHome))
+                    .isolation(Isolation.parse(front.get("isolation")))
                     .build();
         } catch (IllegalArgumentException e) {
             log.warn("agent 定义 {} 作废: {}", file, e.getMessage());
