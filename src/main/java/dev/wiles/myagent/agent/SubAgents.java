@@ -268,6 +268,8 @@ public final class SubAgents implements Mailbox {
         final List<Path> owns;
         /** 它用的模型；null 表示跟主对话一样。 */
         String model;
+        /** 派的时候起的名字；null 表示没起。照 Claude Code：之后用名字和用 id 一样能找到它。 */
+        String name;
 
         // ---- 框架看到的事实（写进通知，不靠它自己说） ----
         /** 写文件工具成功写过的路径。bash 里写的看不到。 */
@@ -491,6 +493,9 @@ public final class SubAgents implements Mailbox {
                 ObjectNode n = list.addObject();
                 n.put("id", c.id);
                 n.put("type", c.role.name());
+                if (c.name != null) {
+                    n.put("name", c.name);
+                }
                 if (c.model != null) {
                     n.put("model", c.model);
                 }
@@ -710,6 +715,37 @@ public final class SubAgents implements Mailbox {
     }
 
     /** 开着的（没关的）有几个。调用方持有 {@link #lock}。 */
+    /** 子 agent 的名字：小写字母开头，字母数字 - _，不长于 32；不许长得像编号（agent-3），免得和 id 混。 */
+    static final java.util.regex.Pattern CHILD_NAME = java.util.regex.Pattern.compile("[a-z][a-z0-9_-]{0,31}");
+
+    static String checkName(String name) {
+        if (name == null) {
+            return null;
+        }
+        if (!CHILD_NAME.matcher(name).matches() || name.matches("agent-[0-9]+")) {
+            throw new IllegalArgumentException("name 要小写字母开头、只用字母数字 - _、不超过 32 个字符，也不能写成 agent-数字: " + name);
+        }
+        return name;
+    }
+
+    /**
+     * 按 id 或名字找子 agent（在 {@link #lock} 下调）。先认 id；不是 id 就认名字，同名的取<b>最新派出的</b>那个——
+     * 照 Claude Code：「一个更新的 agent 拿走了这个名字」之后，名字就指向它，旧的只能用 id 找。
+     */
+    private Child find(String target) {
+        Child byId = children.get(target);
+        if (byId != null) {
+            return byId;
+        }
+        Child latest = null;
+        for (Child c : children.values()) {
+            if (target.equals(c.name)) {
+                latest = c;
+            }
+        }
+        return latest;
+    }
+
     private long open() {
         return children.values().stream().filter(c -> !c.closed).count();
     }
@@ -738,6 +774,9 @@ public final class SubAgents implements Mailbox {
         ObjectNode body = JSON.createObjectNode();
         body.put("agent_id", child.id);
         body.put("agent_type", child.role.name());
+        if (child.name != null) {
+            body.put("name", child.name);
+        }
         body.set("status", status(child));
         body.set("observed", observed(child));
         return NOTICE_TAG + "\n" + body.toPrettyString() + "\n</subagent_notification>";
@@ -1064,6 +1103,7 @@ public final class SubAgents implements Mailbox {
                       "properties": {
                         "message": {"type": "string", "description": "交给新 agent 的任务。它默认看不到你的对话，要把它需要知道的都写进来"},
                         "agent_type": {"type": "string", "enum": [%s], "description": "不传就是 default"},
+                        "name": {"type": "string", "description": "给它起个名字（小写字母开头，字母数字 - _），之后 send_input / wait_agent / close_agent / resume_agent 用名字或 id 都能找到它；同名的话名字归最新派出的那个"},
                         "model": {"type": "string", "description": "这次用的模型，不传就按类型定义、再按会话默认（跟你一样）。简单、量大的活（查文件、跑测试、照着样子改）可以换便宜的模型；fork 不能换"},
                         "owns": {"type": "array", "items": {"type": "string"}, "description": "它负责（独占写）的文件或目录，相对工作区。worker 必填。它跑着的时候你和别的 agent 写不了这些路径，它也只能写这些路径；它交回结果后放开"}
                       },
@@ -1125,8 +1165,10 @@ public final class SubAgents implements Mailbox {
                 }
             }
             String requested;
+            String name;
             try {
                 requested = AgentDefinition.normalizeModel(args.path("model").asText(null));
+                name = checkName(args.hasNonNull("name") ? args.get("name").asText().strip() : null);
             } catch (IllegalArgumentException e) {
                 return ToolResult.error(e.getMessage());
             }
@@ -1155,6 +1197,7 @@ public final class SubAgents implements Mailbox {
             }
             Child child = new Child(id, role, agent, owns);
             child.model = model;
+            child.name = name;
             agent.withMailbox(new ChildInbox(child));
             agent.onEvent(event -> {
                 if (event instanceof AgentEvent.Failed f) {
@@ -1178,7 +1221,11 @@ public final class SubAgents implements Mailbox {
             log.info("派出 {}（{}）: {}", id, role.name(), message.length() > 80 ? message.substring(0, 80) + "…" : message);
             ObjectNode out = JSON.createObjectNode();
             out.put("agent_id", id);
-            out.putNull("nickname");
+            if (name == null) {
+                out.putNull("nickname");
+            } else {
+                out.put("nickname", name);
+            }
             return json(out);
         }
     }
@@ -1202,7 +1249,7 @@ public final class SubAgents implements Mailbox {
                     {
                       "type": "object",
                       "properties": {
-                        "target": {"type": "string", "description": "子 agent 的 id（spawn_agent 返回的）"},
+                        "target": {"type": "string", "description": "子 agent 的 id 或名字（spawn_agent 返回的 agent_id / nickname）"},
                         "message": {"type": "string", "description": "要发给它的话"},
                         "interrupt": {"type": "boolean", "description": "true 打断它当前的事立刻处理这条；不传或 false 排队"}
                       },
@@ -1217,7 +1264,7 @@ public final class SubAgents implements Mailbox {
             String message = Args.requireString(args, "message").strip();
             boolean interrupt = args.path("interrupt").asBoolean(false);
             synchronized (lock) {
-                Child child = children.get(target);
+                Child child = find(target);
                 if (child == null) {
                     return ToolResult.error("没有这个子 agent: " + target);
                 }
@@ -1257,7 +1304,7 @@ public final class SubAgents implements Mailbox {
                     {
                       "type": "object",
                       "properties": {
-                        "targets": {"type": "array", "items": {"type": "string"}, "description": "要等的子 agent id；传多个时任一个结束就返回"},
+                        "targets": {"type": "array", "items": {"type": "string"}, "description": "要等的子 agent 的 id 或名字；传多个时任一个结束就返回"},
                         "timeout_ms": {"type": "number", "description": "超时毫秒数。默认 %d，最小 %d，最大 %d。宁可等久一点（几分钟），别反复轮询"}
                       },
                       "required": ["targets"]
@@ -1281,15 +1328,17 @@ public final class SubAgents implements Mailbox {
             synchronized (lock) {
                 while (true) {
                     ObjectNode statuses = JSON.createObjectNode();
+                    Set<String> delivered = new java.util.HashSet<>();
                     for (String id : targets) {
-                        Child child = children.get(id);
+                        Child child = find(id);
                         if (isFinal(child)) {
-                            statuses.set(id, status(child));
+                            statuses.set(id, status(child));        // 键用调用方写的（id 或名字），它好对上号
+                            delivered.add(child.id);
                         }
                     }
                     if (!statuses.isEmpty()) {
-                        // 结果在这儿拿到了，同一份通知就不再送一遍
-                        notices.removeIf(n -> statuses.has(n.agentId()));
+                        // 结果在这儿拿到了，同一份通知就不再送一遍。按真正的 id 撤——用名字等的时候键是名字
+                        notices.removeIf(n -> delivered.contains(n.agentId()));
                         ObjectNode out = JSON.createObjectNode();
                         out.set("status", statuses);
                         out.put("timed_out", false);
@@ -1330,7 +1379,7 @@ public final class SubAgents implements Mailbox {
             return """
                     {
                       "type": "object",
-                      "properties": {"target": {"type": "string", "description": "要关的子 agent id"}},
+                      "properties": {"target": {"type": "string", "description": "要关的子 agent 的 id 或名字"}},
                       "required": ["target"]
                     }
                     """;
@@ -1340,7 +1389,7 @@ public final class SubAgents implements Mailbox {
         public ToolResult execute(JsonNode args) {
             String target = Args.requireString(args, "target").strip();
             synchronized (lock) {
-                Child child = children.get(target);
+                Child child = find(target);
                 JsonNode previous = status(child);
                 if (child != null && !child.closed) {
                     child.closed = true;
@@ -1378,7 +1427,7 @@ public final class SubAgents implements Mailbox {
             return """
                     {
                       "type": "object",
-                      "properties": {"id": {"type": "string", "description": "要重新打开的子 agent id"}},
+                      "properties": {"id": {"type": "string", "description": "要重新打开的子 agent 的 id 或名字"}},
                       "required": ["id"]
                     }
                     """;
@@ -1388,7 +1437,7 @@ public final class SubAgents implements Mailbox {
         public ToolResult execute(JsonNode args) {
             String id = Args.requireString(args, "id").strip();
             synchronized (lock) {
-                Child child = children.get(id);
+                Child child = find(id);
                 if (child == null) {
                     return ToolResult.error("没有这个子 agent: " + id);
                 }

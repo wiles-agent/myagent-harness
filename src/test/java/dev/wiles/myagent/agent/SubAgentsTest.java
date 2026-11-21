@@ -450,6 +450,45 @@ class SubAgentsTest {
     }
 
     @Test
+    @DisplayName("名字：派的时候起名，之后 send_input / wait_agent / close_agent / resume_agent 用名字或 id 都行；同名指向最新的那个")
+    void childrenCanBeAddressedByName() throws Exception {
+        Script first = new Script().reply("第一个查完了").reply("补查完了");
+        Script second = new Script().reply("第二个查完了");
+        Rig rig = new Rig(first, second);
+
+        ToolResult spawned = rig.exec("spawn_agent", Map.of("message", "查 a", "agent_type", "explorer", "name", "scout"));
+        assertTrue(spawned.ok(), spawned.content());
+        String firstId = M.readTree(spawned.content()).path("agent_id").asText();
+        assertEquals("scout", M.readTree(spawned.content()).path("nickname").asText());
+        awaitIdle(rig.subagents);
+
+        ToolResult waited = rig.exec("wait_agent", Map.of("targets", List.of("scout")));
+        assertTrue(waited.content().contains("第一个查完了"), waited.content());
+        assertFalse(rig.subagents.hasMail(), "用名字 wait 拿到了结果，同一份通知不该再送一遍");
+        assertTrue(rig.exec("send_input", Map.of("target", "scout", "message", "再查 b")).ok());
+        awaitIdle(rig.subagents);
+        assertTrue(rig.exec("wait_agent", Map.of("targets", List.of("scout"))).content().contains("补查完了"));
+
+        // 同名再派一个：名字归新的，旧的还能用 id 找到
+        String secondId = rig.spawn(Map.of("message", "查 c", "agent_type", "explorer", "name", "scout"));
+        awaitIdle(rig.subagents);
+        assertNotEquals(firstId, secondId);
+        assertTrue(rig.exec("wait_agent", Map.of("targets", List.of("scout"))).content().contains("第二个查完了"));
+        assertTrue(rig.exec("close_agent", Map.of("target", firstId)).ok());
+        assertTrue(rig.exec("close_agent", Map.of("target", "scout")).ok());
+        assertTrue(rig.exec("resume_agent", Map.of("id", "scout")).ok());
+
+        ToolResult unknown = rig.exec("send_input", Map.of("target", "nobody", "message", "x"));
+        assertFalse(unknown.ok());
+        assertTrue(rig.subagents.report().path("children").get(0).path("name").asText().equals("scout"));
+
+        for (String bad : List.of("Scout Two", "agent-7", "", "x".repeat(40))) {
+            ToolResult r = rig.exec("spawn_agent", Map.of("message", "x", "name", bad));
+            assertFalse(r.ok(), "名字 " + bad + " 不该收");
+        }
+    }
+
+    @Test
     @DisplayName("模型：调用参数 > 类型定义 > 会话默认；FORCE 压过一切；fork 永远跟主对话、也不许指定；不能换模型的会话照旧用默认")
     void modelPrecedence() throws Exception {
         List<String> built = new CopyOnWriteArrayList<>();
