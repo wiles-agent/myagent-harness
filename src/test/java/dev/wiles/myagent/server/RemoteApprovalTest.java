@@ -3,6 +3,7 @@ package dev.wiles.myagent.server;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.wiles.myagent.tool.safety.ApprovalOrigin;
 import dev.wiles.myagent.tool.safety.ApprovalRequest;
+import dev.wiles.myagent.tool.safety.ApprovalScope;
 import dev.wiles.myagent.tool.safety.ApprovalVerdict;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -259,6 +260,31 @@ class RemoteApprovalTest {
 
         reply(approval, "no");
         asked.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    }
+
+    @Test
+    @DisplayName("后台子 agent 的审批标明是谁：来源跟着发起调用的线程走，不靠全局字段；主 agent 那边照旧是空的")
+    void originFollowsTheCallingThread() throws Exception {
+        RemoteApproval approval = withClients();
+        ApprovalOrigin worker = new ApprovalOrigin("agent-3", "worker", "scout（worker）");
+        CompletableFuture<ApprovalVerdict> fromChild = CompletableFuture.supplyAsync(() -> {
+            ApprovalScope.set(worker);
+            try {
+                return approval.decide(ApprovalRequest.bash("rm -rf build", "会删除文件"));
+            } finally {
+                ApprovalScope.clear();
+            }
+        });
+        awaitRequest();
+        assertEquals("scout（worker） · agent-3", lastRequest().get("origin").asText());
+        reply(approval, "no");
+        fromChild.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
+
+        CompletableFuture<ApprovalVerdict> fromMain = askAsync(approval);     // 别的线程、没设来源
+        awaitRequestAfter(1);
+        assertEquals("", lastRequest().get("origin").asText());
+        reply(approval, "no");
+        fromMain.get(TIMEOUT_SECONDS, TimeUnit.SECONDS);
     }
 
     @Test

@@ -450,6 +450,34 @@ class SubAgentsTest {
     }
 
     @Test
+    @DisplayName("审批来源：子 agent 调工具时带着自己的身份（id、类型、名字），主 agent 调的时候是空的")
+    void childToolCallsCarryTheirIdentity() throws Exception {
+        List<String> seen = new CopyOnWriteArrayList<>();
+        Tool probe = new Tool() {
+            public String name() { return "bash"; }
+            public String description() { return "bash"; }
+            public String parametersSchema() { return "{\"type\":\"object\",\"properties\":{}}"; }
+            public ToolResult execute(JsonNode args) {
+                var who = dev.wiles.myagent.tool.safety.ApprovalScope.current();
+                seen.add(who == null ? "<main>" : who.label());
+                return ToolResult.ok("退出码: 0");
+            }
+        };
+        Script child = new Script().call("bash", "{}").reply("跑完了");
+        Rig rig = new Rig(child);
+        rig.tools.replace(probe);
+
+        rig.spawn(Map.of("message", "跑一下", "agent_type", "worker", "owns", List.of("a.py"), "name", "scout"));
+        awaitIdle(rig.subagents);
+        rig.exec("bash", Map.of());
+
+        assertEquals(2, seen.size(), seen.toString());
+        assertTrue(seen.get(0).contains("scout") && seen.get(0).contains("worker") && seen.get(0).contains("agent-"),
+                seen.get(0));
+        assertEquals("<main>", seen.get(1), "主 agent 的调用不能沾上子 agent 的身份");
+    }
+
+    @Test
     @DisplayName("名字：派的时候起名，之后 send_input / wait_agent / close_agent / resume_agent 用名字或 id 都行；同名指向最新的那个")
     void childrenCanBeAddressedByName() throws Exception {
         Script first = new Script().reply("第一个查完了").reply("补查完了");

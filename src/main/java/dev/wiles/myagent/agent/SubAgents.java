@@ -12,6 +12,8 @@ import dev.wiles.myagent.tool.BuiltinTools;
 import dev.wiles.myagent.tool.Tool;
 import dev.wiles.myagent.tool.ToolRegistry;
 import dev.wiles.myagent.tool.ToolSearchTool;
+import dev.wiles.myagent.tool.safety.ApprovalOrigin;
+import dev.wiles.myagent.tool.safety.ApprovalScope;
 import dev.wiles.myagent.tool.ToolResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -627,6 +629,13 @@ public final class SubAgents implements Mailbox {
     // ---------------------------------------------------------------- 生命周期
 
     /** 开一轮。调用方持有 {@link #lock}。 */
+    /** 审批框上的身份：「scout（worker） · agent-3」，没起名就是「worker 子 agent · agent-3」。 */
+    static ApprovalOrigin originOf(Child child) {
+        String title = child.name != null ? child.name + "（" + child.role.name() + "）"
+                : child.role.name() + " 子 agent";
+        return new ApprovalOrigin(child.id, child.role.name(), title);
+    }
+
     private void startTurn(Child child, String input) {
         child.running = true;
         child.state = State.RUNNING;
@@ -645,7 +654,10 @@ public final class SubAgents implements Mailbox {
                 }
             }, settings.childTimeoutMillis(), java.util.concurrent.TimeUnit.MILLISECONDS);
         }
+        ApprovalOrigin who = originOf(child);
         Thread worker = new Thread(() -> {
+            // 这条线程（和它为每次工具调用新开的线程）要的审批，都标明是这个子 agent，见 ApprovalScope
+            ApprovalScope.set(who);
             String text = null;
             Throwable error = null;
             try {

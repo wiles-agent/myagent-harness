@@ -219,6 +219,26 @@ class AuditLogTest {
     }
 
     @Test
+    @DisplayName("后台子 agent 要的审批，留底里也记着是谁——来源取自发起调用的线程")
+    void auditRecordsTheCallingSubagent(@TempDir Path dir) throws IOException {
+        Path file = dir.resolve("run.jsonl");
+        try (AuditLog audit = new AuditLog(file)) {
+            ApprovalPolicy policy = audit.audited(ApprovalPolicy.denyAll());
+            dev.wiles.myagent.tool.safety.ApprovalScope.set(
+                    new dev.wiles.myagent.tool.safety.ApprovalOrigin("agent-3", "worker", "scout（worker）"));
+            try {
+                policy.decide(ApprovalRequest.bash("rm -rf build", "会删除文件"));
+            } finally {
+                dev.wiles.myagent.tool.safety.ApprovalScope.clear();
+            }
+            policy.decide(ApprovalRequest.bash("rm -rf dist", "会删除文件"));
+        }
+        List<JsonNode> lines = read(file);
+        assertEquals("scout（worker） · agent-3", lines.get(0).path("origin").asText());
+        assertTrue(lines.get(1).path("origin").isMissingNode(), "主 agent 要的审批没有来源");
+    }
+
+    @Test
     @DisplayName("装饰器不能改变审批结果本身")
     void decoratorKeepsTheDecision(@TempDir Path dir) {
         try (AuditLog audit = new AuditLog(dir.resolve("run.jsonl"))) {

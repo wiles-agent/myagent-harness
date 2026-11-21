@@ -181,7 +181,11 @@ public final class AuditLog implements AutoCloseable {
     public ApprovalPolicy audited(ApprovalPolicy delegate) {
         return request -> {
             ApprovalVerdict verdict = delegate.decide(request);
-            approval(request, verdict);
+            // 工具造请求时不知道自己是被谁调的；来源跟着线程走（后台子 agent 设在自己线程上），这里补上，
+            // 事后查账才分得清这一笔是主 agent 还是哪个 worker 要的
+            var scoped = dev.wiles.myagent.tool.safety.ApprovalScope.current();
+            approval(scoped != null && (request.origin() == null || request.origin().isBlank())
+                    ? request.from(scoped) : request, verdict);
             return verdict;
         };
     }

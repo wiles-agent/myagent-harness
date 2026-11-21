@@ -301,6 +301,8 @@ myagent 一步都不插手。`--isolated` 每次开临时 profile，进程一死
 - 派的时候可以用 `name` 起名字（照 Claude Code）：之后 `send_input` / `wait_agent` / `close_agent` / `resume_agent`
   写名字和写 id 一样。名字是小写字母开头的 `a-z0-9-_`，不超过 32 个字符，不能写成 `agent-数字`（那是 id 的样子）。
   同名再派一个，名字就归新的那个，旧的只能用 id 找。
+- 后台子 agent 要审批时（跑危险命令、覆盖文件），确认框和审计日志里会标明是谁，比如「scout（worker） · agent-3」；
+  主 agent 自己要的审批没有这个标记。来源跟着发起调用的线程走，几个子 agent 同时在跑也不会张冠李戴（照 Claude Code）。
 - 派 worker 必须写明 `owns`（它负责的文件或目录）：它跑着时别人写不了这些路径，它也只能写这些路径。
 - 子 agent 交回的通知里带 `observed`——框架记录的实际写了哪些文件、跑了哪些命令和退出码，不靠它自述。
   子 agent 改过的文件主 agent 没跑过测试就想交卷，会被提醒一次。

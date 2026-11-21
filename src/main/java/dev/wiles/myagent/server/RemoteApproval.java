@@ -3,6 +3,7 @@ package dev.wiles.myagent.server;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import dev.wiles.myagent.tool.safety.ApprovalOrigin;
+import dev.wiles.myagent.tool.safety.ApprovalScope;
 import dev.wiles.myagent.tool.safety.ApprovalPolicy;
 import dev.wiles.myagent.tool.safety.ApprovalRequest;
 import dev.wiles.myagent.tool.safety.ApprovalVerdict;
@@ -97,7 +98,9 @@ public final class RemoteApproval implements ApprovalPolicy {
         if (!hasClients.getAsBoolean()) {
             return ApprovalVerdict.no("当前没有界面连着，没人能确认这个动作。");
         }
-        ApprovalOrigin who = origin;
+        // 来源先看发起调用的线程（后台子 agent 在自己线程上设了身份），没有再退回全局那个
+        ApprovalOrigin scoped = ApprovalScope.current();
+        ApprovalOrigin who = scoped != null ? scoped : origin;
         ApprovalRequest request = who == null ? incoming : incoming.from(who);
 
         RuleSuggester.Suggestions suggestions = RuleSuggester.forRequest(request);
