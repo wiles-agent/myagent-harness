@@ -222,6 +222,15 @@ public final class CommandGuard {
         return worst == RiskLevel.SAFE ? CommandRisk.safe() : CommandRisk.approval(reason);
     }
 
+    /**
+     * 这一段单拿出来，守卫会不会直接放行（既不禁止、也不用审批）。
+     * 给 {@link ApprovalRules} 用：这样的段不需要授权规则罩着。
+     */
+    boolean segmentIsSafe(String segment) {
+        CommandRisk risk = assessSegment(segment);
+        return !risk.isForbidden() && !risk.needsApproval();
+    }
+
     private CommandRisk assessSegment(String segment) {
         String name = commandName(segment);
         if (name.isEmpty()) {

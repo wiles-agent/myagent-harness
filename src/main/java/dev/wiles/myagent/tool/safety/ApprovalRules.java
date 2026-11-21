@@ -124,6 +124,9 @@ public final class ApprovalRules {
         };
     }
 
+    /** 判「这一段命令守卫会不会放行」用。守卫没有状态，共用一个。 */
+    private static final CommandGuard GUARD = new CommandGuard();
+
     private Outcome checkCommand(String command) {
         List<String> segments = CommandGuard.splitSegments(command).stream()
                 .map(String::strip)
@@ -139,16 +142,22 @@ public final class ApprovalRules {
                 return new Outcome(Decision.DENY, hit);
             }
         }
-        // allow 要每一段都罩得住才算——白名单要乐观但不能有缺口
+        // allow 要每一段<b>要审批的</b>都罩得住才算——白名单要乐观但不能有缺口。
+        // 命令守卫本来就放行的段（git status、echo、ls）不用规则罩：不然 `git add x && git status`
+        // 有 `git add *` 也照样要问。守卫的「要审批」只出自逐段判定，所以跳过的正好是不该问的那些
         ApprovalRule last = null;
         for (String segment : segments) {
             ApprovalRule hit = firstCovering(allow, ApprovalKind.BASH, segment);
             if (hit == null) {
+                if (GUARD.segmentIsSafe(segment)) {
+                    continue;
+                }
                 return Outcome.ASK;
             }
             last = hit;
         }
-        return new Outcome(Decision.ALLOW, last);
+        // 一段都没被规则罩着，就不是规则放行的——交给下一层，规则这层不替人做主
+        return last == null ? Outcome.ASK : new Outcome(Decision.ALLOW, last);
     }
 
     private Outcome checkOne(ApprovalKind kind, String subject) {

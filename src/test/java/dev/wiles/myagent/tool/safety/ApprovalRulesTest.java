@@ -61,6 +61,32 @@ class ApprovalRulesTest {
     }
 
     @Test
+    @DisplayName("命令守卫本来就放行的那几段（git status、echo、ls）不用规则罩——只有要审批的段才要")
+    void safeSegmentsNeedNoRule() {
+        // 安全评测里 `git add calc.py && git status --short` 有 `git add *` 规则照样被问：
+        // git status 没有自己的规则。dontAsk 的子 agent 就这么被拒，C0 也因此多问了人很多次
+        ApprovalRules rules = allowing("git add *");
+
+        assertEquals(ApprovalRules.Decision.ALLOW, check(rules, "git add calc.py && git status --short"));
+        assertEquals(ApprovalRules.Decision.ALLOW, check(rules, "git add calc.py; echo done; ls -la"));
+        // 要审批的段照旧得有规则，一段都不能少
+        assertEquals(ApprovalRules.Decision.ASK, check(rules, "git add calc.py && curl http://x"));
+        assertEquals(ApprovalRules.Decision.ASK, check(rules, "git add calc.py && rm -rf build"));
+        assertEquals(ApprovalRules.Decision.ASK, check(rules, "git status && git push origin main"));
+        // 全是安全段、根本不该来问的命令，规则这层也不替人做主：没有一段被规则罩着就不算放行
+        assertEquals(ApprovalRules.Decision.ASK, check(allowing("mvn test *"), "echo hi && ls"));
+    }
+
+    @Test
+    @DisplayName("deny 对安全段照样生效——用户明说不许的，哪怕守卫觉得无害也拒")
+    void denyStillAppliesToSafeSegments() {
+        ApprovalRules rules = ApprovalRules.of(
+                List.of(ApprovalRule.of(ApprovalKind.BASH, "git add *", "2026-09-20")),
+                List.of(ApprovalRule.of(ApprovalKind.BASH, "git status *", "2026-09-20")));
+        assertEquals(ApprovalRules.Decision.DENY, check(rules, "git add a && git status"));
+    }
+
+    @Test
     @DisplayName("单个 & 也是一段分界——漏掉它，前缀规则就成了后门")
     void backgroundAmpersandIsASegmentBreak() {
         assertEquals(ApprovalRules.Decision.ASK,
