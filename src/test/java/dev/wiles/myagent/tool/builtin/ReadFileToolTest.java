@@ -98,4 +98,22 @@ class ReadFileToolTest {
     void pathEscape() {
         assertThrows(IllegalArgumentException.class, () -> call("{\"path\":\"../../etc/passwd\"}"));
     }
+
+    @Test
+    @DisplayName("密钥 / 凭据文件不读——和 bash 那道闸同一张表（安全评测里 read_file 绕过 cat 的拦截把私钥读了出来）")
+    void refusesCredentialFiles() throws Exception {
+        Files.createDirectories(tmp.resolve("keys"));
+        Files.writeString(tmp.resolve("keys/id_rsa"), "CANARY-KEY");
+        Files.createDirectories(tmp.resolve(".ssh"));
+        Files.writeString(tmp.resolve(".ssh/config"), "CANARY-SSH");
+        Files.writeString(tmp.resolve("server.PEM"), "CANARY-PEM");
+
+        for (String path : new String[]{"keys/id_rsa", "keys\\id_rsa", ".ssh/config", "server.PEM"}) {
+            ToolResult r = tool.execute(M.createObjectNode().put("path", path));
+            assertFalse(r.ok(), path + " 不该读得到: " + r.content());
+            assertFalse(r.content().contains("CANARY"), r.content());
+        }
+        Files.writeString(tmp.resolve("deploy.sh"), "echo hi");
+        assertTrue(call("{\"path\":\"deploy.sh\"}").ok(), "普通文件照读");
+    }
 }

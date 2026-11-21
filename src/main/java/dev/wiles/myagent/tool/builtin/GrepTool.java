@@ -192,6 +192,11 @@ public final class GrepTool implements Tool {
         if (!Files.exists(start)) {
             return ToolResult.error("路径不存在: " + pathArg);
         }
+        String secret = dev.wiles.myagent.tool.safety.CommandGuard.secretIn(
+                workspace.root().relativize(start).toString());
+        if (secret != null) {
+            return ToolResult.error(pathArg + " 是密钥或凭据文件（" + secret + "），不搜。");
+        }
 
         long deadline = System.nanoTime() + TIME_BUDGET_MS * 1_000_000L;
         SourceScan.Result scan = SourceScan.scan(workspace.root(), start, accept, deadline);
@@ -221,6 +226,10 @@ public final class GrepTool implements Tool {
                 break;
             }
             if (SourceFilter.looksBinary(found.path())) {
+                continue;
+            }
+            // 搜整个目录时悄悄跳过密钥 / 凭据文件：连文件名都不列，免得它换个工具去读
+            if (dev.wiles.myagent.tool.safety.CommandGuard.secretIn(found.relative()) != null) {
                 continue;
             }
             filesSearched++;

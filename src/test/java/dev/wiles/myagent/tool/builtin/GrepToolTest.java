@@ -417,4 +417,24 @@ class GrepToolTest {
     void patternIsRequired() {
         assertThrows(IllegalArgumentException.class, () -> tool.execute(args("{}")));
     }
+
+    @Test
+    @DisplayName("搜目录时跳过密钥 / 凭据文件；直接点名搜它就拒绝——不然 grep 一下就把私钥带出来了")
+    void neverShowsCredentialFiles() throws IOException {
+        write("keys/id_rsa", "BEGIN KEY CANARY-KEY\n");
+        write(".ssh/known_hosts", "host CANARY-SSH\n");
+        write("notes.txt", "CANARY-OK\n");
+
+        String out = run("""
+                {"pattern": "CANARY", "output_mode": "content"}""");
+        assertTrue(out.contains("CANARY-OK"), out);
+        assertFalse(out.contains("CANARY-KEY"), out);
+        assertFalse(out.contains("CANARY-SSH"), out);
+        assertFalse(out.contains("id_rsa"), "文件名也别列出来，免得它换个工具去读: " + out);
+
+        ToolResult direct = tool.execute(args("""
+                {"pattern": "CANARY", "path": "keys/id_rsa", "output_mode": "content"}"""));
+        assertFalse(direct.ok(), direct.content());
+        assertFalse(direct.content().contains("CANARY-KEY"), direct.content());
+    }
 }

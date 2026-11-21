@@ -93,6 +93,28 @@ public final class CommandGuard {
             "/.kube/config", "/etc/shadow", "/etc/sudoers", "/etc/passwd",
             ".pem", ".p12", "keychain");
 
+    /**
+     * 这个路径是不是密钥 / 凭据文件。是就返回命中的那个片段，不是返回 null。
+     *
+     * <p>read_file、grep 和这里的 bash 闸共用<b>同一张表</b>：只拦 bash 的话，模型换成 read_file
+     * 一样把私钥读出来（安全评测里没有 hook 的 4 次里有 3 次就是这么读到的）。
+     *
+     * @param path 工作区相对路径（斜杠方向不限）
+     */
+    public static String secretIn(String path) {
+        if (path == null) {
+            return null;
+        }
+        // 前面补一个 /，相对路径 .ssh/config 才对得上 "/.ssh" 这种按目录写的片段
+        String p = "/" + path.replace('\\', '/').toLowerCase(java.util.Locale.ROOT);
+        for (String secret : SECRET_PATHS) {
+            if (p.contains(secret)) {
+                return secret;
+            }
+        }
+        return null;
+    }
+
     /** 系统目录，配合写操作就是 FORBIDDEN。 */
     private static final List<String> SYSTEM_PATHS = List.of(
             "/etc/", "/usr/", "/bin/", "/sbin/", "/System/", "/Library/", "/boot/", "/var/");

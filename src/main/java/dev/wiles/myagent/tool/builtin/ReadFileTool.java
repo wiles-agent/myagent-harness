@@ -85,6 +85,14 @@ public final class ReadFileTool implements Tool {
 
         Path file = workspace.resolve(pathArg);   // 越界会抛 IllegalArgumentException
 
+        // 按工作区相对路径判：用绝对路径的话，工作区本身所在的目录名也会被拿去比
+        String secret = dev.wiles.myagent.tool.safety.CommandGuard.secretIn(
+                workspace.root().relativize(file).toString());
+        if (secret != null) {
+            return ToolResult.error(pathArg + " 是密钥或凭据文件（" + secret + "），不读。"
+                    + "任务真的需要它的话，在答复里说明，交给用户自己处理。");
+        }
+
         if (!Files.exists(file)) {
             return ToolResult.error("文件不存在: " + pathArg);
         }
