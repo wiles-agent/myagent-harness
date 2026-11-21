@@ -45,11 +45,15 @@ import java.util.regex.Pattern;
  *                        不限制它能调哪些技能
  * @param memory          给不给它长期记忆（{@code recall} / {@code remember}），见 {@link Memory}
  * @param background      照 Claude Code：后台类型，主 agent 要等它时也不阻塞，结果只走通知
+ * @param color           界面上显示它用的颜色（照 Claude Code 那 8 种），null 表示界面自己定
  */
 public record AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
                               String rules, boolean ownsRequired, String source, String model, int maxTurns,
                               PermissionMode permissionMode, List<String> skills, Memory memory,
-                              boolean background) {
+                              boolean background, String color) {
+
+    /** Claude Code 认的颜色。界面按名字配色，所以这里只收名字，不收 #rrggbb。 */
+    static final Set<String> COLORS = Set.of("red", "blue", "green", "yellow", "purple", "orange", "pink", "cyan");
 
     /**
      * 照 Claude Code：子 agent <b>不继承</b>长期记忆，定义里写了 {@code memory} 才有。
@@ -141,13 +145,18 @@ public record AgentDefinition(String name, String description, List<String> tool
         permissionMode = permissionMode == null ? PermissionMode.DEFAULT : permissionMode;
         skills = skills == null ? List.of() : List.copyOf(skills);
         memory = memory == null ? Memory.NONE : memory;
+        color = color == null || color.isBlank() ? null : color.strip().toLowerCase(Locale.ROOT);
+        if (color != null && !COLORS.contains(color)) {
+            throw new IllegalArgumentException("color 只认 " + String.join(" / ", new java.util.TreeSet<>(COLORS))
+                    + "，收到: " + color);
+        }
     }
 
     /** 只有名字、描述、工具、规矩这几样的常见写法；别的字段取默认。 */
     public AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
                            String rules, boolean ownsRequired, String source) {
         this(name, description, tools, disallowedTools, rules, ownsRequired, source,
-                null, 0, PermissionMode.DEFAULT, List.of(), Memory.NONE, false);
+                null, 0, PermissionMode.DEFAULT, List.of(), Memory.NONE, false, null);
     }
 
     /**
@@ -172,6 +181,7 @@ public record AgentDefinition(String name, String description, List<String> tool
         private List<String> skills = List.of();
         private Memory memory = Memory.NONE;
         private boolean background;
+        private String color;
 
         private Builder(String name, String description) {
             this.name = name;
@@ -189,10 +199,11 @@ public record AgentDefinition(String name, String description, List<String> tool
         public Builder skills(List<String> v) { this.skills = v; return this; }
         public Builder memory(Memory v) { this.memory = v; return this; }
         public Builder background(boolean v) { this.background = v; return this; }
+        public Builder color(String v) { this.color = v; return this; }
 
         public AgentDefinition build() {
             return new AgentDefinition(name, description, tools, disallowedTools, rules, ownsRequired, source,
-                    model, maxTurns, permissionMode, skills, memory, background);
+                    model, maxTurns, permissionMode, skills, memory, background, color);
         }
     }
 
@@ -294,6 +305,7 @@ public record AgentDefinition(String name, String description, List<String> tool
                     .skills(nameList(front.getOrDefault("skills", "")))
                     .memory(Memory.parse(front.get("memory")))
                     .background(flag("background", front.get("background")))
+                    .color(front.get("color"))
                     .build();
         } catch (IllegalArgumentException e) {
             log.warn("agent 定义 {} 作废: {}", file, e.getMessage());

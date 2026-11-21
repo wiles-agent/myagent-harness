@@ -128,6 +128,18 @@ public final class Protocol {
      * 「正在读 README」会被当成同一条线上的先后两步。老界面不认识这个字段，
      * 忽略即可（见 docs/protocol.md 第 2 节），所以不升协议版本。
      */
+    /**
+     * 同上，子 agent 的事件再带一个 {@code agent} 对象（类型、名字、颜色、模型，见 {@code SubAgents#describe}）。
+     * 不认识这个字段的老界面忽略即可，协议版本不升。
+     */
+    public static ObjectNode encode(AgentEvent event, String taskId, ObjectNode agentMeta) {
+        ObjectNode node = encode(event, taskId);
+        if (agentMeta != null && !agentMeta.isEmpty()) {
+            node.set("agent", agentMeta);
+        }
+        return node;
+    }
+
     public static ObjectNode encode(AgentEvent event, String taskId) {
         ObjectNode node = encode(event);
         if (taskId != null && !taskId.isBlank()) {

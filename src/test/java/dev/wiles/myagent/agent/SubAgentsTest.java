@@ -450,6 +450,22 @@ class SubAgentsTest {
     }
 
     @Test
+    @DisplayName("describe：给界面的子 agent 描述——类型、名字、颜色、模型；不认识的 id 是 null")
+    void describeGivesTheUiWhatItNeeds() throws Exception {
+        Rig rig = new Rig(new Script().reply("ok"));
+        rig.subagents.withDefinitions(AgentDefinitions.of(List.of(
+                AgentDefinition.builder("scout", "查东西").source("t").color("cyan").build())));
+        String id = rig.spawn(Map.of("message", "查", "agent_type", "scout", "name", "finder"));
+        awaitIdle(rig.subagents);
+
+        JsonNode d = rig.subagents.describe(id);
+        assertEquals("scout", d.path("type").asText());
+        assertEquals("finder", d.path("name").asText());
+        assertEquals("cyan", d.path("color").asText());
+        assertNull(rig.subagents.describe("agent-999"));
+    }
+
+    @Test
     @DisplayName("background：后台类型 wait_agent 不阻塞，立刻回它的状态并说明结果走通知；说明里标出来；做完照样来通知")
     void backgroundTypesAreNeverWaitedOn() throws Exception {
         CountDownLatch release = new CountDownLatch(1);

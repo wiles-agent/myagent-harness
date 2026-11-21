@@ -291,6 +291,7 @@ public final class AgentServer extends WebSocketServer {
                     .withModelClients(model -> meter.meter(new DeepSeekClient(config.withModel(model))))
                     .withSkills(this::findSkill);   // 技能库在下面才加载；派的时候才查，那时已经有了
         }
+        this.subagentsRef = subagents;
         // plan 模式的两个工具。只读启动时不接：那时什么都改不了，没有「先规划再动手」这回事
         if (!options.readOnly()) {
             tools.registerAll(PlanModeTools.create(planMode, (ask, plan) -> {
@@ -1209,8 +1210,13 @@ public final class AgentServer extends WebSocketServer {
     private void onAgentEvent(String taskId, AgentEvent event) {
         checkpointBeforeTool(event);
         recordToAudit(event);
-        publish(Protocol.encode(event, taskId));
+        // 子 agent 的事件带上它是谁（类型、名字、颜色、模型），界面才显示得出来；主对话和收尾审查的不带
+        SubAgents live = subagentsRef;
+        publish(Protocol.encode(event, taskId, live == null || taskId == null ? null : live.describe(taskId)));
     }
+
+    /** 派出去的子 agent 归它管。转发事件时要用它查「这是谁」，所以留一份；没开子 agent 是 null。 */
+    private volatile SubAgents subagentsRef;
 
     /**
      * 会动手的工具开跑前拍一张工具级检查点（见 {@code Checkpoints#markTool}）。

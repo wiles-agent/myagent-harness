@@ -768,6 +768,31 @@ public final class SubAgents implements Mailbox {
     }
 
     /** 开着的（没关的）有几个。调用方持有 {@link #lock}。 */
+    /**
+     * 给界面的子 agent 描述：类型、名字、颜色、模型。它的事件只带 {@code task: "agent-3"}，
+     * 界面要显示「scout · finder」、按类型定义的颜色上色，得从这里拿。不认识的 id 是 null。
+     */
+    public ObjectNode describe(String id) {
+        synchronized (lock) {
+            Child c = children.get(id);
+            if (c == null) {
+                return null;
+            }
+            ObjectNode d = JSON.createObjectNode();
+            d.put("type", c.role.name());
+            if (c.name != null) {
+                d.put("name", c.name);
+            }
+            if (c.role.color() != null) {
+                d.put("color", c.role.color());
+            }
+            if (c.model != null) {
+                d.put("model", c.model);
+            }
+            return d;
+        }
+    }
+
     /** 要等的目标全是还在跑的后台类型（找不到的不算）。在 {@link #lock} 下调。 */
     private boolean onlyBackgroundRunning(List<String> targets) {
         boolean any = false;

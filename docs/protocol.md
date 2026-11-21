@@ -369,6 +369,9 @@ relay 要过一趟公网，同一屋檐下反而绕远。两种模式**同时可
 忽略即可，所以协议版本不升。主对话自己的事件没有这个字段；但主对话用 `spawn_agent` 派出的
 子 agent（照 Codex：后台异步跑、结果以 `<subagent_notification>` 注入主对话）发的事件带
 `"agent-N"`，走的是同一条通道。
+子 agent 的事件还多带一个 **`agent`** 对象：`type`（类型）、`name`（派的时候起的名字，可无）、
+`color`（类型定义里的显示颜色，`red` / `blue` / `green` / `yellow` / `purple` / `orange` / `pink` / `cyan`，可无）、
+`model`（换了模型才有）。界面拿它显示「scout · finder」并上色；不认识的老界面忽略即可，协议版本不升。
 
 ### 3.3 审批
 

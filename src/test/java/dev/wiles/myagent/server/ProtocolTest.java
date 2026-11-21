@@ -137,6 +137,19 @@ class ProtocolTest {
     }
 
     @Test
+    @DisplayName("子 agent 的事件多带一个 agent 对象（类型、名字、颜色、模型），界面靠它显示；没有就不带")
+    void subagentEventsCarryWhoTheyAre() {
+        ObjectNode meta = new com.fasterxml.jackson.databind.ObjectMapper().createObjectNode()
+                .put("type", "scout").put("name", "finder").put("color", "cyan");
+        ObjectNode tagged = Protocol.encode(new AgentEvent.TextDelta("嗯"), "agent-3", meta);
+        assertEquals("agent-3", tagged.get("task").asText());
+        assertEquals("cyan", tagged.path("agent").path("color").asText());
+        assertEquals("finder", tagged.path("agent").path("name").asText());
+
+        assertFalse(Protocol.encode(new AgentEvent.TextDelta("嗯"), "t3", null).has("agent"));
+    }
+
+    @Test
     @DisplayName("取字段容错：前端漏传字段不该让服务端崩")
     void lenientFieldAccess() throws Exception {
         var node = Protocol.mapper().readTree("{\"t\":\"prompt\"}");

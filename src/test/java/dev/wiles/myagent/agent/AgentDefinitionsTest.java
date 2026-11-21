@@ -76,6 +76,10 @@ class AgentDefinitionsTest {
                 AgentDefinition.parse(Path.of("p.md"), "---\ndescription: x\npermissionMode: dontAsk\n---\n").permissionMode());
         assertEquals(AgentDefinition.PermissionMode.DEFAULT,
                 AgentDefinition.parse(Path.of("p.md"), "---\ndescription: x\npermissionMode: manual\n---\n").permissionMode());
+        assertNull(b.color());
+        assertEquals("cyan", AgentDefinition.parse(Path.of("c.md"), "---\ndescription: x\ncolor: cyan\n---\n").color());
+        assertNull(AgentDefinition.parse(Path.of("c.md"), "---\ndescription: x\ncolor: '#ff0000'\n---\n"),
+                "只认 Claude Code 那 8 种颜色");
         assertFalse(b.background());
         assertTrue(AgentDefinition.parse(Path.of("g.md"), "---\ndescription: x\nbackground: true\n---\n").background());
         assertNull(AgentDefinition.parse(Path.of("g.md"), "---\ndescription: x\nbackground: maybe\n---\n"));
