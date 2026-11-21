@@ -674,7 +674,26 @@ public final class Agent {
         ToolResult result = runInterruptibly(call);
         emit(new AgentEvent.ToolFinished(
                 id, call.name(), result.ok(), result.content(), result.diff()));
-        history.add(ChatMessage.toolResult(call.id(), result.content()));
+        history.add(ChatMessage.toolResult(call.id(), probed(call.name(), result.content())));
+    }
+
+    /** 这几个工具的输出是 agent 自己的东西（写文件的回执、子 agent 的结果已经复核过），不用扫。 */
+    private static final java.util.Set<String> UNPROBED = java.util.Set.of(
+            "write_file", "edit_file", "create_project", "remember", "recall", "list_dir", "glob",
+            "spawn_agent", "wait_agent", "close_agent", "send_input", "resume_agent",
+            "enter_plan_mode", "exit_plan_mode", "tool_search");
+
+    /**
+     * auto 下工具输出进历史之前过一遍注入探针（照 Claude Code 的输入侧防线）：像是冲着 agent 写的指令，
+     * 前面加一句警告。只加警告、原文照留——判错了也不丢东西。探针挂在这条线程的审查器上，不在 auto 下就是原样。
+     */
+    private String probed(String tool, String content) {
+        dev.wiles.myagent.tool.safety.AutoReviewer reviewer = dev.wiles.myagent.tool.safety.ApprovalScope.autoReviewer();
+        if (reviewer == null || content == null || UNPROBED.contains(tool)) {
+            return content;
+        }
+        String warning = reviewer.probeToolOutput(tool, content);
+        return warning == null ? content : warning + "\n\n" + content;
     }
 
     /**
@@ -792,7 +811,7 @@ public final class Agent {
                 ToolCall call = batch.get(i);
                 String content = settled(futures.get(i), deadline, call.name(), ids.get(i),
                         settled);
-                history.add(ChatMessage.toolResult(call.id(), content));
+                history.add(ChatMessage.toolResult(call.id(), probed(call.name(), content)));
             }
         } finally {
             pool.shutdownNow();

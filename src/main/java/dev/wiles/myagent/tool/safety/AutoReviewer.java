@@ -26,4 +26,13 @@ public interface AutoReviewer {
     default String reviewHandoff(String report) {
         return null;
     }
+
+    /**
+     * 注入探针（照 Claude Code 的输入侧防线）：工具输出进上下文之前扫一遍，像是冲着 agent 来的指令就给一句警告。
+     *
+     * @return 加在输出前面的警告；没事返回 null
+     */
+    default String probeToolOutput(String tool, String output) {
+        return null;
+    }
 }
