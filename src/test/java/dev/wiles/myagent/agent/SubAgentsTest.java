@@ -458,8 +458,7 @@ class SubAgentsTest {
         Rig rig = new Rig(plain, keeper, fork);
         rig.tools.register(stub("recall")).register(stub("remember"));
         rig.subagents.withDefinitions(AgentDefinitions.of(List.of(
-                new AgentDefinition("keeper", "记东西", null, List.of(), "", false, "t", null, 0,
-                        AgentDefinition.PermissionMode.DEFAULT, List.of(), AgentDefinition.Memory.PROJECT))));
+                AgentDefinition.builder("keeper", "记东西").source("t").memory(AgentDefinition.Memory.PROJECT).build())));
 
         rig.spawn(Map.of("message", "x", "agent_type", "worker", "owns", List.of("a.py")));
         rig.spawn(Map.of("message", "x", "agent_type", "keeper"));
@@ -482,8 +481,8 @@ class SubAgentsTest {
                 "先跑 scripts/check.sh，再打 tag。", java.nio.file.Path.of("/skills/deploy"), Map.of());
         rig.subagents.withSkills(id -> "deploy".equals(id) ? java.util.Optional.of(deploy) : java.util.Optional.empty())
                 .withDefinitions(AgentDefinitions.of(List.of(
-                        new AgentDefinition("releaser", "发版", null, List.of(), "照流程来", false, "t", null, 0,
-                                AgentDefinition.PermissionMode.DEFAULT, List.of("deploy", "missing")))));
+                        AgentDefinition.builder("releaser", "发版").rules("照流程来").source("t")
+                                .skills(List.of("deploy", "missing")).build())));
 
         rig.spawn(Map.of("message", "发 1.2", "agent_type", "releaser"));
         awaitIdle(rig.subagents);
@@ -516,10 +515,10 @@ class SubAgentsTest {
         Rig rig = new Rig(planner, quiet);
         rig.tools.replace(probe);
         rig.subagents.withDefinitions(AgentDefinitions.of(List.of(
-                new AgentDefinition("planner", "只看", null, List.of(), "", false, "t", null, 0,
-                        AgentDefinition.PermissionMode.PLAN),
-                new AgentDefinition("quiet", "后台跑", null, List.of(), "", false, "t", null, 0,
-                        AgentDefinition.PermissionMode.DONT_ASK))));
+                AgentDefinition.builder("planner", "只看").source("t")
+                        .permissionMode(AgentDefinition.PermissionMode.PLAN).build(),
+                AgentDefinition.builder("quiet", "后台跑").source("t")
+                        .permissionMode(AgentDefinition.PermissionMode.DONT_ASK).build())));
 
         String desc = rig.subagents.spawnDescription();
         assertTrue(desc.contains("- planner：只看（只读）"), desc);
@@ -544,7 +543,7 @@ class SubAgentsTest {
                 .reply("改完了");                                     // send_input 之后的一轮
         Rig rig = new Rig(SubAgents.Mode.ON, 0, SubAgents.Settings.defaults(50), child);
         rig.subagents.withDefinitions(AgentDefinitions.of(List.of(
-                new AgentDefinition("quick", "两步就交", null, List.of(), "", false, "t", null, 2))));
+                AgentDefinition.builder("quick", "两步就交").source("t").maxTurns(2).build())));
 
         String id = rig.spawn(Map.of("message", "看看", "agent_type", "quick"));
         awaitIdle(rig.subagents);
@@ -656,7 +655,7 @@ class SubAgentsTest {
             built.add(m);
             return new Script().reply("ok");
         }).withDefinitions(AgentDefinitions.of(List.of(
-                new AgentDefinition("scout", "查东西", null, List.of(), "", false, "t", "tiny-model"))));
+                AgentDefinition.builder("scout", "查东西").source("t").model("tiny-model").build())));
 
         AgentDefinition explorer = AgentDefinitions.EXPLORER;
         AgentDefinition scout = rig.subagents.allowed().stream().filter(d -> d.name().equals("scout")).findFirst().orElseThrow();

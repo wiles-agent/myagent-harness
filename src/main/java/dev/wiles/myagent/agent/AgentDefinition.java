@@ -141,34 +141,55 @@ public record AgentDefinition(String name, String description, List<String> tool
         memory = memory == null ? Memory.NONE : memory;
     }
 
-    public AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
-                           String rules, boolean ownsRequired, String source, String model, int maxTurns,
-                           PermissionMode permissionMode, List<String> skills) {
-        this(name, description, tools, disallowedTools, rules, ownsRequired, source, model, maxTurns,
-                permissionMode, skills, Memory.NONE);
-    }
-
-    public AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
-                           String rules, boolean ownsRequired, String source, String model, int maxTurns,
-                           PermissionMode permissionMode) {
-        this(name, description, tools, disallowedTools, rules, ownsRequired, source, model, maxTurns,
-                permissionMode, List.of());
-    }
-
-    public AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
-                           String rules, boolean ownsRequired, String source, String model, int maxTurns) {
-        this(name, description, tools, disallowedTools, rules, ownsRequired, source, model, maxTurns,
-                PermissionMode.DEFAULT);
-    }
-
-    public AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
-                           String rules, boolean ownsRequired, String source, String model) {
-        this(name, description, tools, disallowedTools, rules, ownsRequired, source, model, 0, PermissionMode.DEFAULT);
-    }
-
+    /** 只有名字、描述、工具、规矩这几样的常见写法；别的字段取默认。 */
     public AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
                            String rules, boolean ownsRequired, String source) {
-        this(name, description, tools, disallowedTools, rules, ownsRequired, source, null, 0, PermissionMode.DEFAULT);
+        this(name, description, tools, disallowedTools, rules, ownsRequired, source,
+                null, 0, PermissionMode.DEFAULT, List.of(), Memory.NONE);
+    }
+
+    /**
+     * 字段越来越多（照 Claude Code 的 frontmatter），按位置传参已经没法读了——要用哪几项就设哪几项，
+     * 其余取默认。默认值和文件里不写那一项是同一个意思。
+     */
+    public static Builder builder(String name, String description) {
+        return new Builder(name, description);
+    }
+
+    public static final class Builder {
+        private final String name;
+        private final String description;
+        private List<String> tools;
+        private List<String> disallowedTools = List.of();
+        private String rules = "";
+        private boolean ownsRequired;
+        private String source = "builtin";
+        private String model;
+        private int maxTurns;
+        private PermissionMode permissionMode = PermissionMode.DEFAULT;
+        private List<String> skills = List.of();
+        private Memory memory = Memory.NONE;
+
+        private Builder(String name, String description) {
+            this.name = name;
+            this.description = description;
+        }
+
+        public Builder tools(List<String> v) { this.tools = v; return this; }
+        public Builder disallowedTools(List<String> v) { this.disallowedTools = v; return this; }
+        public Builder rules(String v) { this.rules = v; return this; }
+        public Builder ownsRequired(boolean v) { this.ownsRequired = v; return this; }
+        public Builder source(String v) { this.source = v; return this; }
+        public Builder model(String v) { this.model = v; return this; }
+        public Builder maxTurns(int v) { this.maxTurns = v; return this; }
+        public Builder permissionMode(PermissionMode v) { this.permissionMode = v; return this; }
+        public Builder skills(List<String> v) { this.skills = v; return this; }
+        public Builder memory(Memory v) { this.memory = v; return this; }
+
+        public AgentDefinition build() {
+            return new AgentDefinition(name, description, tools, disallowedTools, rules, ownsRequired, source,
+                    model, maxTurns, permissionMode, skills, memory);
+        }
     }
 
     private static int turns(String raw) {
@@ -245,15 +266,18 @@ public record AgentDefinition(String name, String description, List<String> tool
         String name = front.getOrDefault("name", "").strip();
         name = (name.isEmpty() ? stem : name).toLowerCase(Locale.ROOT);
         try {
-            return new AgentDefinition(name, front.get("description"),
-                    front.getOrDefault("tools", "").isBlank() ? null : toolList(front.get("tools")),
-                    toolList(front.getOrDefault("disallowedtools", "")),
-                    parsed.body(),
-                    "required".equalsIgnoreCase(front.getOrDefault("owns", "").strip()),
-                    file.toString(), front.get("model"), turns(front.get("maxturns")),
-                    PermissionMode.parse(front.get("permissionmode")),
-                    nameList(front.getOrDefault("skills", "")),
-                    Memory.parse(front.get("memory")));
+            return builder(name, front.get("description"))
+                    .tools(front.getOrDefault("tools", "").isBlank() ? null : toolList(front.get("tools")))
+                    .disallowedTools(toolList(front.getOrDefault("disallowedtools", "")))
+                    .rules(parsed.body())
+                    .ownsRequired("required".equalsIgnoreCase(front.getOrDefault("owns", "").strip()))
+                    .source(file.toString())
+                    .model(front.get("model"))
+                    .maxTurns(turns(front.get("maxturns")))
+                    .permissionMode(PermissionMode.parse(front.get("permissionmode")))
+                    .skills(nameList(front.getOrDefault("skills", "")))
+                    .memory(Memory.parse(front.get("memory")))
+                    .build();
         } catch (IllegalArgumentException e) {
             log.warn("agent 定义 {} 作废: {}", file, e.getMessage());
             return null;
