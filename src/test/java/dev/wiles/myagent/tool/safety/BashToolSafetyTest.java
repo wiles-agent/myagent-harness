@@ -117,4 +117,20 @@ class BashToolSafetyTest {
         assertEquals("curl https://example.com/x.json", details.get(0));
         assertFalse(reasons.get(0).isBlank());
     }
+
+    @Test
+    @DisplayName("deny 规则对守卫判成安全的命令也生效（照 Claude Code）：以前 cat 这类不走审批，deny 写了也没用")
+    void denyRulesApplyToSafeCommands(@org.junit.jupiter.api.io.TempDir Path home) throws Exception {
+        PolicyStore store = new PolicyStore(home.resolve("policy.json"));
+        store.save(ApprovalRules.of(List.of(), List.of(
+                ApprovalRule.of(ApprovalKind.READ, ".env", "d"),
+                ApprovalRule.of(ApprovalKind.BASH, "git log *", "d"))));
+        java.nio.file.Files.writeString(tmp.resolve(".env"), "TOKEN=CANARY");
+        BashTool bash = tool(new PolicyGate(request -> ApprovalVerdict.yes(), store));
+        ToolResult r = run(bash, "cat .env");
+        assertFalse(r.ok(), r.content());
+        assertFalse(r.content().contains("CANARY"), r.content());
+        assertFalse(run(bash, "git log --oneline").ok(), "bash 的 deny 规则也对安全命令生效");
+        assertTrue(run(bash, "echo ok").ok());
+    }
 }

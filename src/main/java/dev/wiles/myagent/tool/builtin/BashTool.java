@@ -134,6 +134,11 @@ public final class BashTool implements Tool {
             return ToolResult.error("这条命令被安全策略拒绝执行。原因: " + risk.reason()
                     + "。请改用其它方式完成目标，不要重试同样的命令。");
         }
+        // deny 规则对哪条命令都生效（照 Claude Code），包括守卫判成安全、平时不走审批的 cat、git log
+        ApprovalVerdict denied = approval.denyOnly(ApprovalRequest.bash(command, risk.reason()));
+        if (denied != null && !denied.approved()) {
+            return ToolResult.error(denied.deniedMessage("这条命令被规则挡下。") + " 换一种做法，不要换个写法绕过。");
+        }
         // 沙箱（照 Claude Code）：开着且用得上时命令进沙箱；要在沙箱外跑得单独批，设置能把这条路关掉
         boolean wantsOut = Args.optBoolean(args, "dangerously_disable_sandbox", false)
                 && sandbox.settings().allowUnsandboxedCommands();

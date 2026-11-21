@@ -80,8 +80,22 @@ public final class GrepTool implements Tool {
 
     private final Workspace workspace;
 
+    private final dev.wiles.myagent.tool.safety.ApprovalPolicy approval;
+
     public GrepTool(Workspace workspace) {
+        this(workspace, dev.wiles.myagent.tool.safety.ApprovalPolicy.denyAll());
+    }
+
+    /** @param approval 只用它的 deny 规则（照 Claude Code 的 {@code Read(./.env)}）：被 deny 的文件不搜、不列 */
+    public GrepTool(Workspace workspace, dev.wiles.myagent.tool.safety.ApprovalPolicy approval) {
         this.workspace = workspace;
+        this.approval = approval;
+    }
+
+    /** 这个文件被 read 的 deny 规则挡着。 */
+    private boolean readDenied(String relative) {
+        var v = approval.denyOnly(dev.wiles.myagent.tool.safety.ApprovalRequest.read(relative.replace('\\', '/')));
+        return v != null && !v.approved();
     }
 
     /** 只读，不弹审批，怎么跑都无所谓——允许和别的调用同时执行。 */
@@ -197,6 +211,9 @@ public final class GrepTool implements Tool {
         if (secret != null) {
             return ToolResult.error(pathArg + " 是密钥或凭据文件（" + secret + "），不搜。");
         }
+        if (Files.isRegularFile(start) && readDenied(workspace.root().relativize(start).toString())) {
+            return ToolResult.error(pathArg + " 被规则挡着不让读。");
+        }
 
         long deadline = System.nanoTime() + TIME_BUDGET_MS * 1_000_000L;
         SourceScan.Result scan = SourceScan.scan(workspace.root(), start, accept, deadline);
@@ -229,7 +246,8 @@ public final class GrepTool implements Tool {
                 continue;
             }
             // 搜整个目录时悄悄跳过密钥 / 凭据文件：连文件名都不列，免得它换个工具去读
-            if (dev.wiles.myagent.tool.safety.CommandGuard.secretIn(found.relative()) != null) {
+            if (dev.wiles.myagent.tool.safety.CommandGuard.secretIn(found.relative()) != null
+                    || readDenied(found.relative())) {
                 continue;
             }
             filesSearched++;

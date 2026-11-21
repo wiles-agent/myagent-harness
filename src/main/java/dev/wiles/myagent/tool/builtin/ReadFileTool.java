@@ -31,9 +31,16 @@ public final class ReadFileTool implements Tool {
     private static final int MAX_LINE_LENGTH = 2000;
 
     private final Workspace workspace;
+    private final dev.wiles.myagent.tool.safety.ApprovalPolicy approval;
 
     public ReadFileTool(Workspace workspace) {
+        this(workspace, dev.wiles.myagent.tool.safety.ApprovalPolicy.denyAll());
+    }
+
+    /** @param approval 只用它的 deny 规则（照 Claude Code 的 {@code Read(./.env)}）：读本来就不问人 */
+    public ReadFileTool(Workspace workspace, dev.wiles.myagent.tool.safety.ApprovalPolicy approval) {
         this.workspace = workspace;
+        this.approval = approval;
     }
 
     /** 只读，不弹审批，怎么跑都无所谓——允许和别的调用同时执行。 */
@@ -91,6 +98,11 @@ public final class ReadFileTool implements Tool {
         if (secret != null) {
             return ToolResult.error(pathArg + " 是密钥或凭据文件（" + secret + "），不读。"
                     + "任务真的需要它的话，在答复里说明，交给用户自己处理。");
+        }
+        var denied = approval.denyOnly(dev.wiles.myagent.tool.safety.ApprovalRequest.read(
+                workspace.root().relativize(file).toString().replace('\\', '/')));
+        if (denied != null && !denied.approved()) {
+            return ToolResult.error(denied.deniedMessage(pathArg + " 被规则挡着不让读。"));
         }
 
         if (!Files.exists(file)) {

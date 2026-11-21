@@ -68,7 +68,7 @@ public final class RuleSuggester {
         }
         return switch (request.kind()) {
             case BASH -> forCommand(request.subject());
-            case WRITE -> forPath(request.subject());
+            case WRITE, READ -> forPath(request.subject());
             case BROWSE, NETWORK -> forHost(request.subject());
         };
     }

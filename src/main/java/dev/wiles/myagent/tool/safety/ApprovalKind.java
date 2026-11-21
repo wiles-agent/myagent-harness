@@ -49,7 +49,13 @@ public enum ApprovalKind {
      * 沙箱里的命令要连某个主机（照 Claude Code 沙箱的出网代理）。subject 是<b>主机名</b>，匹配和 {@link #BROWSE} 一样，
      * 但两种规则互不通用：批了「在这个站点上操作浏览器」不等于批了「shell 里随便往这个站发东西」。
      */
-    NETWORK("network");
+    NETWORK("network"),
+
+    /**
+     * 读文件（照 Claude Code 的 {@code Read(./.env)}）。subject 是工作区相对路径，规则按路径 glob 匹配，和 {@link #WRITE} 同一套。
+     * 只用来写 deny：读本来就不问人，deny 让用户把敏感文件挡在 read_file、grep 和 cat 这类命令外面。
+     */
+    READ("read");
 
     private final String id;
 

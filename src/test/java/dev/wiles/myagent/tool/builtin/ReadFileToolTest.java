@@ -10,6 +10,7 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -115,5 +116,26 @@ class ReadFileToolTest {
         }
         Files.writeString(tmp.resolve("deploy.sh"), "echo hi");
         assertTrue(call("{\"path\":\"deploy.sh\"}").ok(), "普通文件照读");
+    }
+
+    @Test
+    @DisplayName("read 的 deny 规则也管 read_file 和 grep（照 Claude Code 的 Read(./.env)）")
+    void readDenyRulesApplyToFileTools(@TempDir Path home) throws Exception {
+        var store = new dev.wiles.myagent.tool.safety.PolicyStore(home.resolve("policy.json"));
+        store.save(dev.wiles.myagent.tool.safety.ApprovalRules.of(List.of(), List.of(
+                dev.wiles.myagent.tool.safety.ApprovalRule.of(dev.wiles.myagent.tool.safety.ApprovalKind.READ, ".env", "d"))));
+        var gate = new dev.wiles.myagent.tool.safety.PolicyGate(
+                request -> dev.wiles.myagent.tool.safety.ApprovalVerdict.yes(), store);
+        Files.writeString(tmp.resolve(".env"), "TOKEN=CANARY");
+        Files.writeString(tmp.resolve("app.py"), "print('TOKEN')");
+
+        ToolResult r = new ReadFileTool(new Workspace(tmp), gate).execute(M.createObjectNode().put("path", ".env"));
+        assertFalse(r.ok(), r.content());
+        assertFalse(r.content().contains("CANARY"));
+
+        ToolResult g = new GrepTool(new Workspace(tmp), gate).execute(
+                M.createObjectNode().put("pattern", "TOKEN").put("output_mode", "content"));
+        assertTrue(g.content().contains("app.py"), g.content());
+        assertFalse(g.content().contains("CANARY"), "被 deny 的文件 grep 也不看: " + g.content());
     }
 }

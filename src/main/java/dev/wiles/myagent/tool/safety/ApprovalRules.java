@@ -122,6 +122,7 @@ public final class ApprovalRules {
             case WRITE -> checkOne(ApprovalKind.WRITE, request.subject());
             case BROWSE -> checkOne(ApprovalKind.BROWSE, request.subject());
             case NETWORK -> checkOne(ApprovalKind.NETWORK, request.subject());
+            case READ -> checkOne(ApprovalKind.READ, request.subject());
         };
     }
 
@@ -178,6 +179,13 @@ public final class ApprovalRules {
             ApprovalRule hit = firstCovering(deny, ApprovalKind.BASH, segment);
             if (hit == null) {
                 hit = firstCovering(deny, ApprovalKind.BASH, CommandGuard.unwrapForRules(segment, true));
+            }
+            // 照 Claude Code：Read 的 deny 规则也管 shell 里认得出的读文件命令（cat、head、grep……）和输入重定向
+            for (String target : hit == null ? CommandGuard.readTargets(segment) : List.<String>of()) {
+                hit = firstCovering(deny, ApprovalKind.READ, target);
+                if (hit != null) {
+                    break;
+                }
             }
             if (hit != null) {
                 return new Outcome(Decision.DENY, hit);

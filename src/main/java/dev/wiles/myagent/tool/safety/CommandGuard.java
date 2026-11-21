@@ -557,6 +557,48 @@ public final class CommandGuard {
         return null;
     }
 
+    /** 读文件的命令：参数是它们要读的文件（照 Claude Code：Read 的 deny 规则也管这些）。 */
+    private static final Set<String> FILE_READERS = Set.of(
+            "cat", "head", "tail", "less", "more", "tac", "nl", "grep", "egrep", "fgrep", "rg", "ag",
+            "sed", "cut", "sort", "uniq", "wc", "diff", "strings", "xxd", "od", "hexdump", "base64", "cp", "jq",
+            "source", ".");
+
+    /** 第一个位置参数是模式不是文件的。 */
+    private static final Set<String> PATTERN_FIRST = Set.of("grep", "egrep", "fgrep", "rg", "ag", "sed", "jq");
+
+    private static final Pattern INPUT_REDIRECT = Pattern.compile("(?<![<\\d])<\\s*[\"']?([^\\s\"';&|<>]+)");
+
+    /**
+     * 这一段命令会读哪些文件：读文件命令的参数（去掉选项、去掉 grep 这类的第一个参数——那是模式）和输入重定向。
+     * 给 read 的 deny 规则比对用。认不全的（脚本里再读）管不着——和 Claude Code 一样，要硬边界用沙箱。
+     */
+    public static List<String> readTargets(String segment) {
+        List<String> out = new java.util.ArrayList<>();
+        String inner = unwrap(segment, true).inner();
+        Matcher m = INPUT_REDIRECT.matcher(inner);
+        while (m.find()) {
+            out.add(m.group(1));
+        }
+        String name = commandName(inner);
+        if (!FILE_READERS.contains(name)) {
+            return out;
+        }
+        boolean skipPattern = PATTERN_FIRST.contains(name);
+        String args = stripRedirects(stripCommandName(inner, name));
+        for (String token : args.trim().split("\\s+")) {
+            String arg = token.replaceAll("^[\"']|[\"']$", "");
+            if (arg.isEmpty() || arg.startsWith("-")) {
+                continue;
+            }
+            if (skipPattern) {
+                skipPattern = false;
+                continue;
+            }
+            out.add(arg);
+        }
+        return out;
+    }
+
     private CommandRisk assessUnwrapped(String segment) {
         String name = commandName(segment);
         if (name.isEmpty()) {

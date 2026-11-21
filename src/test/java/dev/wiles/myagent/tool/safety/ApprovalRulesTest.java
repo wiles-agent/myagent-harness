@@ -303,4 +303,20 @@ class ApprovalRulesTest {
         assertEquals(ApprovalRules.Decision.ALLOW, browse(browseAllowing("file://"), "file://"));
         assertEquals(ApprovalRules.Decision.ASK, browse(browseAllowing("example.com"), "file://"));
     }
+
+    @Test
+    @DisplayName("read 的 deny 规则（照 Claude Code 的 Read(./.env)）：cat / head / grep 的参数和输入重定向都算读")
+    void readDenyRulesCoverShellReads() {
+        ApprovalRules rules = ApprovalRules.of(List.of(),
+                List.of(ApprovalRule.of(ApprovalKind.READ, ".env", "d")));
+        assertEquals(ApprovalRules.Decision.DENY, check(rules, "cat .env"));
+        assertEquals(ApprovalRules.Decision.DENY, check(rules, "head -5 config/.env"), "光写文件名，哪一层都算");
+        assertEquals(ApprovalRules.Decision.DENY, check(rules, "grep -n TOKEN \".env\""));
+        assertEquals(ApprovalRules.Decision.DENY, check(rules, "python app.py < .env"));
+        assertEquals(ApprovalRules.Decision.DENY, check(rules, "ls && cat .env | base64"));
+        assertNotEquals(ApprovalRules.Decision.DENY, check(rules, "cat .env.example"));
+        assertNotEquals(ApprovalRules.Decision.DENY, check(rules, "echo .env"), "echo 不读文件");
+        assertEquals(ApprovalRules.Decision.DENY,
+                rules.check(ApprovalRequest.read("app/.env")).decision(), "文件工具读也拦");
+    }
 }

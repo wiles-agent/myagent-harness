@@ -72,7 +72,7 @@ public record ApprovalRule(ApprovalKind kind, String match, String added) {
     public boolean matchesEverything() {
         return switch (kind) {
             case BASH -> "*".equals(match);
-            case WRITE -> "*".equals(match) || "**".equals(match) || "**/*".equals(match);
+            case WRITE, READ -> "*".equals(match) || "**".equals(match) || "**/*".equals(match);
             case BROWSE, NETWORK -> "*".equals(match) || "*.*".equals(match);
         };
     }
@@ -88,7 +88,7 @@ public record ApprovalRule(ApprovalKind kind, String match, String added) {
         }
         return switch (kind) {
             case BASH -> coversSegment(subject);
-            case WRITE -> pathMatcher().test(subject.replace('\\', '/'));
+            case WRITE, READ -> pathMatcher().test(subject.replace('\\', '/'));
             case BROWSE, NETWORK -> coversHost(subject);
         };
     }

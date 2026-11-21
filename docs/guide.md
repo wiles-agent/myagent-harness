@@ -622,6 +622,20 @@ WebSocket 服务，握手信息（端口 + 一次性 token）打在 stdout。照
 会毁东西的命令（`rm`/`mv`/`chmod`…）**只给精确档**，因为结尾那个通配对它们意味着
 「再加一个删除目标」。
 
+**deny 规则对哪条命令都生效**（照 Claude Code），包括守卫判成安全、平时不走审批的 `cat`、`git log`。
+敏感文件用 `read` 的 deny 规则挡（照 Claude Code 的 `Read(./.env)`）：
+
+```json
+{"version": 1, "allow": [], "deny": [{"tool": "read", "match": ".env"}, {"tool": "read", "match": "secrets/**"}]}
+```
+
+挡的是 `read_file`、`grep`（不搜也不列），以及 bash 里认得出的读文件命令（`cat`、`head`、`grep`、`sed`、`base64`……）
+的参数和输入重定向（`< .env`）。光写文件名哪一层都算。脚本里再去读的（`python app.py` 自己 open）管不着——
+要硬边界用沙箱（和 Claude Code 一样）。
+
+**受保护路径**（照 Claude Code）：`.myagent/`、`.claude/`、`.mcp.json`、shell 启动文件、`.gitconfig`、`.git/hooks`、`.git/config`。
+写它们哪种模式都要问——新建也问、能回滚也问，**不吃 allow 规则**：改了它们，下次 agent 的类型定义、hook 或 shell 就会执行里面的东西。
+
 覆盖已有文件时，确认框里直接画 diff。只说「原 30 行 → 新 45 行」的话，
 用户能做的判断只有「文件变长了」，而他要决定的是「这个改动对不对」。
 
