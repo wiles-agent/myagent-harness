@@ -43,10 +43,35 @@ import java.util.regex.Pattern;
  * @param permissionMode  这种子 agent 的权限模式，见 {@link PermissionMode}
  * @param skills          派出时预载进它系统提示词的技能（按技能 id）。照 Claude Code：只管预载，
  *                        不限制它能调哪些技能
+ * @param memory          给不给它长期记忆（{@code recall} / {@code remember}），见 {@link Memory}
  */
 public record AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
                               String rules, boolean ownsRequired, String source, String model, int maxTurns,
-                              PermissionMode permissionMode, List<String> skills) {
+                              PermissionMode permissionMode, List<String> skills, Memory memory) {
+
+    /**
+     * 照 Claude Code：子 agent <b>不继承</b>长期记忆，定义里写了 {@code memory} 才有。
+     *
+     * <p>不只是对齐：子 agent 常在读不可信的文件和网页，被带偏之后往用户的长期记忆里写一条，
+     * 以后每个会话都会读到它——记忆是跨会话的，污染一次就一直在。所以默认不给，要的时候明着写。
+     * 我们没有每个子 agent 单独的记忆目录：USER / PROJECT 都是给它主对话用的那一套 recall / remember，
+     * 写的时候照旧由 remember 的 scope 参数决定落在全局还是本项目。Claude Code 的 {@code local} 按 PROJECT 算。
+     */
+    public enum Memory {
+        NONE, USER, PROJECT;
+
+        static Memory parse(String raw) {
+            if (raw == null || raw.isBlank()) {
+                return NONE;
+            }
+            return switch (raw.strip().toLowerCase(java.util.Locale.ROOT)) {
+                case "none" -> NONE;
+                case "user" -> USER;
+                case "project", "local" -> PROJECT;
+                default -> throw new IllegalArgumentException("memory 只认 user / project / local，收到: " + raw);
+            };
+        }
+    }
 
     /**
      * 照 Claude Code 的 {@code permissionMode}，但<b>只收收紧的三种</b>。
@@ -113,6 +138,14 @@ public record AgentDefinition(String name, String description, List<String> tool
         }
         permissionMode = permissionMode == null ? PermissionMode.DEFAULT : permissionMode;
         skills = skills == null ? List.of() : List.copyOf(skills);
+        memory = memory == null ? Memory.NONE : memory;
+    }
+
+    public AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
+                           String rules, boolean ownsRequired, String source, String model, int maxTurns,
+                           PermissionMode permissionMode, List<String> skills) {
+        this(name, description, tools, disallowedTools, rules, ownsRequired, source, model, maxTurns,
+                permissionMode, skills, Memory.NONE);
     }
 
     public AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
@@ -219,7 +252,8 @@ public record AgentDefinition(String name, String description, List<String> tool
                     "required".equalsIgnoreCase(front.getOrDefault("owns", "").strip()),
                     file.toString(), front.get("model"), turns(front.get("maxturns")),
                     PermissionMode.parse(front.get("permissionmode")),
-                    nameList(front.getOrDefault("skills", "")));
+                    nameList(front.getOrDefault("skills", "")),
+                    Memory.parse(front.get("memory")));
         } catch (IllegalArgumentException e) {
             log.warn("agent 定义 {} 作废: {}", file, e.getMessage());
             return null;

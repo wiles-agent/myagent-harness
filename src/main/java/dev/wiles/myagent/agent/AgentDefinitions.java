@@ -32,7 +32,7 @@ public final class AgentDefinitions {
     private static final PromptRepository REPO = PromptRepository.createDefault();
 
     static final AgentDefinition DEFAULT = new AgentDefinition("default",
-            "默认 agent，和你有同样的工具（派子 agent 的除外）。",
+            "默认 agent，和你有同样的工具（派子 agent 和长期记忆的除外）。",
             null, List.of(), REPO.loadRequired("subagents/roles/default.md"), false, "builtin");
     static final AgentDefinition EXPLORER = new AgentDefinition("explorer", """
             用来问代码库里具体的问题。explorer 又快又可信，问题要具体、范围要窄。

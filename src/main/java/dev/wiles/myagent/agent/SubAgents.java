@@ -969,6 +969,9 @@ public final class SubAgents implements Mailbox {
             "spawn_agent", "send_input", "wait_agent", "close_agent", "resume_agent",
             PlanMode.ENTER_TOOL, PlanMode.EXIT_TOOL);
 
+    /** 长期记忆的两个工具。子 agent 默认没有，类型定义写了 memory 才给。 */
+    static final Set<String> MEMORY_TOOLS = Set.of("recall", "remember");
+
     /** 主 agent 给得出、子 agent 有可能拿到的工具名，按注册顺序。 */
     private List<String> inheritable() {
         return allTools.all().stream().map(Tool::name).filter(n -> !NEVER_FOR_CHILDREN.contains(n)).toList();
@@ -979,7 +982,10 @@ public final class SubAgents implements Mailbox {
      * 写文件的工具换成以这个子 agent 为写入方的那一版。
      */
     private ToolRegistry toolsFor(AgentDefinition role, String id) {
-        Set<String> menu = role.resolve(inheritable());
+        Set<String> menu = new java.util.LinkedHashSet<>(role.resolve(inheritable()));
+        if (role.memory() == AgentDefinition.Memory.NONE) {
+            menu.removeAll(MEMORY_TOOLS);      // 照 Claude Code 不继承长期记忆，见 AgentDefinition.Memory
+        }
         ToolRegistry narrowed = new ToolRegistry();
         for (Tool tool : allTools.all()) {
             if (!menu.contains(tool.name())) {

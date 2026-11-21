@@ -450,6 +450,29 @@ class SubAgentsTest {
     }
 
     @Test
+    @DisplayName("记忆：子 agent 默认拿不到 recall / remember（照 Claude Code 不继承）；类型定义写了 memory 才给；fork 照主对话")
+    void memoryIsOptIn() throws Exception {
+        Script plain = new Script().reply("ok");
+        Script keeper = new Script().reply("ok");
+        Script fork = new Script().reply("ok");
+        Rig rig = new Rig(plain, keeper, fork);
+        rig.tools.register(stub("recall")).register(stub("remember"));
+        rig.subagents.withDefinitions(AgentDefinitions.of(List.of(
+                new AgentDefinition("keeper", "记东西", null, List.of(), "", false, "t", null, 0,
+                        AgentDefinition.PermissionMode.DEFAULT, List.of(), AgentDefinition.Memory.PROJECT))));
+
+        rig.spawn(Map.of("message", "x", "agent_type", "worker", "owns", List.of("a.py")));
+        rig.spawn(Map.of("message", "x", "agent_type", "keeper"));
+        rig.spawn(Map.of("message", "x", "agent_type", "fork"));
+        awaitIdle(rig.subagents);
+
+        assertFalse(plain.menus.get(0).contains("recall"), plain.menus.get(0).toString());
+        assertFalse(plain.menus.get(0).contains("remember"));
+        assertTrue(keeper.menus.get(0).containsAll(List.of("recall", "remember")), keeper.menus.get(0).toString());
+        assertTrue(fork.menus.get(0).containsAll(List.of("recall", "remember")), "fork 和主对话的菜单一字不差");
+    }
+
+    @Test
     @DisplayName("skills：类型定义里列的技能，正文和目录预载进子 agent 的系统提示词；找不到的跳过；fork 不预载")
     void skillsArePreloadedIntoTheChild() throws Exception {
         Script child = new Script().reply("按技能做完了");

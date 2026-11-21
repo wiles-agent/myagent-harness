@@ -76,6 +76,14 @@ class AgentDefinitionsTest {
                 AgentDefinition.parse(Path.of("p.md"), "---\ndescription: x\npermissionMode: dontAsk\n---\n").permissionMode());
         assertEquals(AgentDefinition.PermissionMode.DEFAULT,
                 AgentDefinition.parse(Path.of("p.md"), "---\ndescription: x\npermissionMode: manual\n---\n").permissionMode());
+        assertEquals(AgentDefinition.Memory.NONE, b.memory());
+        assertEquals(AgentDefinition.Memory.PROJECT,
+                AgentDefinition.parse(Path.of("m.md"), "---\ndescription: x\nmemory: project\n---\n").memory());
+        assertEquals(AgentDefinition.Memory.PROJECT,
+                AgentDefinition.parse(Path.of("m.md"), "---\ndescription: x\nmemory: local\n---\n").memory());
+        assertEquals(AgentDefinition.Memory.USER,
+                AgentDefinition.parse(Path.of("m.md"), "---\ndescription: x\nmemory: user\n---\n").memory());
+        assertNull(AgentDefinition.parse(Path.of("m.md"), "---\ndescription: x\nmemory: everything\n---\n"));
         assertEquals(List.of(), b.skills());
         assertEquals(List.of("deploy", "code-review"), AgentDefinition.parse(Path.of("s.md"),
                 "---\ndescription: x\nskills: deploy, code-review\n---\n").skills());
