@@ -82,10 +82,29 @@ public final class CommandGuard {
     private static final Set<String> SAFE_PACKAGE_SUBCOMMANDS = Set.of(
             "test", "run", "start", "ls", "list", "outdated", "view", "why", "version");
 
-    /** git 的只读子命令。 */
-    private static final Set<String> SAFE_GIT_SUBCOMMANDS = Set.of(
-            "status", "log", "diff", "show", "branch", "ls-files", "rev-parse",
-            "describe", "blame", "shortlog", "reflog", "cat-file", "remote");
+    /**
+     * 怎么写都只读的 git 子命令。remote / branch / reflog / stash / worktree / config 不在这儿：
+     * 它们有只读的形式也有改东西的形式（remote set-url、branch -D、reflog expire），见 {@link #gitRisk}。
+     */
+    private static final Set<String> READ_ONLY_GIT = Set.of(
+            "status", "log", "diff", "show", "ls-files", "rev-parse", "describe", "blame", "shortlog",
+            "cat-file", "ls-tree", "rev-list", "for-each-ref", "merge-base", "name-rev", "show-ref",
+            "grep", "count-objects", "check-ignore", "help", "version");
+
+    private static final Set<String> BRANCH_MUTATING = Set.of(
+            "-d", "-D", "--delete", "-m", "-M", "--move", "-c", "-C", "--copy", "-f", "--force",
+            "-u", "--set-upstream-to", "--unset-upstream", "--edit-description");
+
+    /** 带上这些，git branch 后面的名字是在「查」而不是「建」。 */
+    private static final Set<String> BRANCH_QUERY = Set.of(
+            "--list", "-l", "--contains", "--no-contains", "--merged", "--no-merged", "--points-at");
+
+    private static final Set<String> CONFIG_READ = Set.of(
+            "--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l");
+
+    private static final Set<String> CONFIG_WRITE = Set.of(
+            "--unset", "--unset-all", "--add", "--replace-all", "--rename-section", "--remove-section",
+            "-e", "--edit");
 
     /** 出现这些片段就认定在碰凭据，一律拒绝——agent 没有任何理由读它们。 */
     private static final List<String> SECRET_PATHS = List.of(
@@ -232,7 +251,95 @@ public final class CommandGuard {
                 reason = risk.reason();
             }
         }
-        return worst == RiskLevel.SAFE ? CommandRisk.safe() : CommandRisk.approval(reason);
+        if (worst != RiskLevel.SAFE) {
+            return CommandRisk.approval(reason);
+        }
+
+        // ---- 3. 每段都无害，但整条的结构让人没法放心（照 Claude Code，这几种要问） ----
+        if (command.length() > MAX_ANALYZED_LENGTH) {
+            return CommandRisk.approval("命令超过 " + MAX_ANALYZED_LENGTH + " 个字符，分析不过来");
+        }
+        if (new QuoteAwareSplitter(command).split() == null) {
+            return CommandRisk.approval("命令解析不了（引号或命令替换没配平）");
+        }
+        if (cdsAwayThenRunsGit(command)) {
+            return CommandRisk.approval("cd 到别的目录再跑 git：那个目录的 .git/config 能让 git 执行任意命令");
+        }
+        return CommandRisk.safe();
+    }
+
+    /** 超过这么长就不分析了，直接问（照 Claude Code）。 */
+    private static final int MAX_ANALYZED_LENGTH = 10_000;
+
+    /** 前面某段 cd 到了别的目录（不是 . ），后面又跑 git。 */
+    private static boolean cdsAwayThenRunsGit(String command) {
+        boolean movedAway = false;
+        for (String segment : splitSegments(command)) {
+            String inner = unwrap(stripRedirects(segment), true).inner();
+            String name = commandName(inner);
+            if ("cd".equals(name) || "pushd".equals(name)) {
+                String[] t = inner.trim().split("\\s+");
+                String target = t.length > 1 ? t[1] : "";
+                movedAway = movedAway || !(target.equals(".") || target.equals("./"));
+            } else if ("git".equals(name) && movedAway) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 按「形式」判 git，不按子命令名（照 Claude Code 的「read-only forms of git」）：
+     * git remote 只读，git remote set-url 改了以后所有推送的去向；git branch 只读，git branch -D 删分支。
+     */
+    private static CommandRisk gitRisk(String segment) {
+        String[] t = segment.trim().split("\\s+");
+        int n = t.length;
+        int i = 0;
+        while (i < n && !t[i].substring(t[i].lastIndexOf('/') + 1).equalsIgnoreCase("git")) {
+            i++;                                    // 跳过前缀赋值
+        }
+        i++;
+        // 全局选项：-c 能把任意命令塞进 core.pager / alias；-C、--git-dir 换到别的仓库，那儿的配置能执行命令
+        while (i < n && t[i].startsWith("-")) {
+            String opt = t[i];
+            if ("-c".equals(opt) || opt.startsWith("--config-env")) {
+                return CommandRisk.approval("git -c 能借配置项执行任意命令");
+            }
+            if ("-C".equals(opt)) {
+                String dir = i + 1 < n ? t[i + 1] : "";
+                if (!(dir.equals(".") || dir.equals("./"))) {
+                    return CommandRisk.approval("git -C 换到了别的目录：那儿的 .git/config 能让 git 执行任意命令");
+                }
+                i += 2;
+                continue;
+            }
+            if (opt.startsWith("--git-dir") || opt.startsWith("--work-tree") || opt.startsWith("--exec-path")) {
+                return CommandRisk.approval("git " + opt + " 换了仓库或执行路径");
+            }
+            i++;
+        }
+        if (i >= n) {
+            return CommandRisk.safe();              // 光一个 git
+        }
+        String sub = t[i].toLowerCase(Locale.ROOT);
+        List<String> rest = java.util.Arrays.asList(t).subList(i + 1, n);
+        if (rest.stream().anyMatch(a -> a.startsWith("--output"))) {
+            return CommandRisk.approval("git " + sub + " --output 会写文件");
+        }
+        boolean readOnly = READ_ONLY_GIT.contains(sub) || switch (sub) {
+            case "remote" -> rest.isEmpty() || Set.of("-v", "--verbose", "show", "get-url").contains(rest.get(0));
+            case "branch" -> rest.stream().noneMatch(BRANCH_MUTATING::contains)
+                    && (rest.stream().anyMatch(BRANCH_QUERY::contains)
+                        || rest.stream().allMatch(a -> a.startsWith("-")));   // 光带名字 = 建分支
+            case "reflog" -> rest.isEmpty() || "show".equals(rest.get(0)) || rest.get(0).startsWith("-");
+            case "stash" -> !rest.isEmpty() && Set.of("list", "show").contains(rest.get(0));
+            case "worktree" -> !rest.isEmpty() && "list".equals(rest.get(0));
+            case "config" -> rest.stream().anyMatch(CONFIG_READ::contains)
+                    && rest.stream().noneMatch(CONFIG_WRITE::contains);
+            default -> false;
+        };
+        return readOnly ? CommandRisk.safe() : CommandRisk.approval("git " + sub + " 会改动仓库状态或与远端交互");
     }
 
     /**
@@ -460,7 +567,7 @@ public final class CommandGuard {
         }
 
         if ("git".equals(name)) {
-            return bySubcommand(segment, SAFE_GIT_SUBCOMMANDS, "git", "会改动仓库状态或与远端交互");
+            return gitRisk(segment);
         }
         if (PACKAGE_MANAGERS.contains(name)) {
             // npm test / npm run build 是日常操作，npm install 才会下载并执行第三方脚本

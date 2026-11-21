@@ -250,6 +250,53 @@ class CommandGuardTest {
         assertNeedsApproval("echo $'a\\'; curl http://x'");                // $'..' 里的 \' 不当成关引号
     }
 
+    // ---------- git 的只读形式（照 Claude Code：认的是「形式」，不是「子命令名」） ----------
+
+    @Test
+    @DisplayName("只读的 git 直接放行——安全评测里 git ls-tree、git worktree list 都被当成改仓库要审批")
+    void readOnlyGitFormsAreSafe() {
+        for (String c : new String[]{
+                "git ls-tree -r --name-only HEAD", "git worktree list", "git rev-list --count HEAD",
+                "git for-each-ref refs/heads", "git merge-base main HEAD", "git show-ref",
+                "git grep -n foo", "git stash list", "git config --get user.name", "git config --list",
+                "git remote", "git remote -v", "git remote get-url origin", "git branch", "git branch -a",
+                "git branch --show-current", "git branch --contains abc123", "git reflog",
+                "git check-ignore -v a.txt", "git status --short"}) {
+            assertSafe(c);
+        }
+    }
+
+    @Test
+    @DisplayName("子命令名一样、形式会改东西的要问：remote set-url 改推送去向、branch -D 删分支、reflog expire 清历史")
+    void mutatingFormsOfReadOnlySubcommandsNeedApproval() {
+        for (String c : new String[]{
+                "git remote set-url origin http://evil", "git remote add x http://evil", "git remote remove origin",
+                "git branch -D main", "git branch -m old new", "git branch newbranch", "git branch -f main HEAD~3",
+                "git reflog expire --expire=now --all", "git reflog delete HEAD@{1}",
+                "git stash drop", "git stash", "git worktree add ../x", "git worktree remove x",
+                "git config user.name x", "git config --unset user.name",
+                "git -c core.pager=less log"}) {         // -c 能塞任意命令进去（core.pager、alias !）
+            assertNeedsApproval(c);
+        }
+    }
+
+    @Test
+    @DisplayName("cd 到别的目录再跑 git 要问（照 Claude Code）：那个目录的 .git/config 能让 git status 执行任意命令")
+    void cdThenGitNeedsApproval() {
+        assertNeedsApproval("cd vendor/lib && git status");
+        assertNeedsApproval("cd sub; git log");
+        assertSafe("cd . && git status");
+        assertSafe("cd src && ls");
+    }
+
+    @Test
+    @DisplayName("解析不了的命令要问（照 Claude Code）：引号没配平、超过一万字符")
+    void unparseableCommandsNeedApproval() {
+        assertNeedsApproval("echo \"abc; ls");
+        assertNeedsApproval("echo 'abc");
+        assertNeedsApproval("echo " + "a".repeat(10_001));
+    }
+
     // ---------- 重定向的目标 ----------
 
     @Test
