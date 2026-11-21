@@ -3,6 +3,7 @@ package dev.wiles.myagent.tool.safety;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -513,6 +514,10 @@ public final class CommandGuard {
         if (inner.isForbidden() || inner.needsApproval()) {
             return inner;
         }
+        String guarded = writesProtected(u.inner());
+        if (guarded != null) {
+            return CommandRisk.approval("要写受保护路径 " + guarded + "（改了它，下次 agent 的配置、hook 或别的程序就会执行里面的东西）");
+        }
         if (u.problem() != null) {
             return CommandRisk.approval(u.problem());
         }
@@ -520,6 +525,36 @@ public final class CommandGuard {
             return CommandRisk.approval("给 " + u.specialVar() + " 赋值会改变后面实际跑的是哪个程序");
         }
         return inner;
+    }
+
+    /** 会往参数里写东西的命令：参数是受保护路径就要问。 */
+    private static final Set<String> PATH_WRITERS = Set.of(
+            "cp", "mv", "touch", "mkdir", "ln", "rm", "rmdir", "install", "rsync");
+
+    private static final Pattern REDIRECT_TARGET = Pattern.compile(">>?\\s*[\"']?([^\\s\"';&|<>]+)");
+
+    /**
+     * 这一段有没有往受保护路径写（照 Claude Code 的 protected paths，表和文件工具共用 {@link FileWriteGuard#protectedName}）。
+     *
+     * @return 命中的路径；没有返回 null
+     */
+    private static String writesProtected(String segment) {
+        Matcher m = REDIRECT_TARGET.matcher(segment);
+        while (m.find()) {
+            if (FileWriteGuard.protectedName(m.group(1)) != null) {
+                return m.group(1);
+            }
+        }
+        String name = commandName(segment);
+        if (PATH_WRITERS.contains(name)) {
+            for (String token : stripCommandName(segment, name).trim().split("\\s+")) {
+                String arg = token.replaceAll("^[\"']|[\"']$", "");
+                if (!arg.startsWith("-") && FileWriteGuard.protectedName(arg) != null) {
+                    return arg;
+                }
+            }
+        }
+        return null;
     }
 
     private CommandRisk assessUnwrapped(String segment) {

@@ -27,6 +27,47 @@ public final class FileWriteGuard {
     /** 这些目录是工具自己的数据库，被改写会导致不可恢复的损坏。 */
     private static final List<String> PROTECTED_DIRS = List.of(".git", ".svn", ".hg");
 
+    /**
+     * 受保护的目录（照 Claude Code 的 protected paths）：路径里任何一段是它们就算。
+     * 改了它们，下次打开这个仓库时 agent 自己的配置、类型定义、hook 就变了——写进去是「驻留」，不是改代码。
+     */
+    private static final List<String> PROTECTED_CONFIG_DIRS = List.of(".myagent", ".claude");
+
+    /** 受保护的文件：最后一段是它们就算。shell 启动文件、git 全局配置、MCP 配置——改了之后别的程序会执行里面的东西。 */
+    private static final List<String> PROTECTED_FILES = List.of(".mcp.json", ".bashrc", ".zshrc", ".profile",
+            ".bash_profile", ".zprofile", ".gitconfig");
+
+    /**
+     * 这个路径是不是受保护的；是就返回命中的那一段，不是返回 null。文件工具和 bash 的守卫共用这一张表。
+     * 写它们哪种模式都要问，而且不吃 allow 规则（照 Claude Code：受保护路径不会被自动放行）。
+     */
+    public static String protectedName(String path) {
+        if (path == null || path.isBlank()) {
+            return null;
+        }
+        String normalized = "/" + path.strip().replace('\\', '/');
+        // git 钩子和仓库配置：下次 git commit / status 就会执行里面的东西（文件工具对整个 .git 本来就直接拒）
+        if (normalized.contains("/.git/hooks")) {
+            return ".git/hooks";
+        }
+        if (normalized.endsWith("/.git/config")) {
+            return ".git/config";
+        }
+        String[] segments = path.strip().replace('\\', '/').split("/");
+        for (String s : segments) {
+            if (PROTECTED_CONFIG_DIRS.contains(s)) {
+                return s;
+            }
+        }
+        String last = segments[segments.length - 1];
+        return PROTECTED_FILES.contains(last) ? last : null;
+    }
+
+    /** 写文件的工具问审批都走这儿：受保护路径不吃 allow 规则，别的照常。 */
+    public static ApprovalVerdict decide(ApprovalPolicy approval, String path, ApprovalRequest request) {
+        return protectedName(path) != null ? approval.decideIgnoringAllowRules(request) : approval.decide(request);
+    }
+
     /** 这个文件改坏了能不能回滚。默认一律不能，覆盖就问。 */
     private final Predicate<Path> rewindable;
 
@@ -55,6 +96,12 @@ public final class FileWriteGuard {
                         "禁止直接改写 " + segment + " 目录里的文件，那会损坏版本库本身。"
                                 + "需要操作版本库请用 git 命令。");
             }
+        }
+        String guarded = protectedName(displayPath);
+        if (guarded != null) {
+            // 新建也问、能回滚也问：要防的不是「改坏」，是「埋进去下次被执行」
+            return CommandRisk.approval("要写受保护路径 " + displayPath + "（" + guarded
+                    + "：改了它，下次 agent 的配置、hook 或别的程序就会执行里面的东西）");
         }
         if (!Files.exists(resolved)) {
             return CommandRisk.safe();       // 新建文件没有损失，不打扰用户

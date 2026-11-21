@@ -244,4 +244,32 @@ class FileWriteApprovalTest {
         assertFalse(r.ok());
         assertEquals("[core]\n", Files.readString(tmp.resolve(".git/config")));
     }
+
+    @Test
+    @DisplayName("受保护路径（照 Claude Code）：.myagent、.claude、.mcp.json、shell 启动文件——新建也要问，能回滚也要问")
+    void protectedPathsAlwaysAsk() throws Exception {
+        WriteFileTool tool = new WriteFileTool(new Workspace(tmp), new FileWriteGuard(file -> true), recording(false));
+        for (String path : new String[]{".myagent/agents/evil.md", ".claude/settings.json", ".mcp.json",
+                ".bashrc", "sub/.zshrc", ".gitconfig"}) {
+            asked.clear();
+            ToolResult r = write(tool, path, "x");
+            assertFalse(r.ok(), path + " 不该不问就写: " + r.content());
+            assertEquals(1, asked.size(), path);
+            assertTrue(asked.get(0).contains("受保护"), "要说清为什么问: " + asked.get(0));
+        }
+        asked.clear();
+        assertTrue(write(tool, "docs/myagent.md", "x").ok(), "名字里带 myagent 的普通文件不算");
+        assertTrue(asked.isEmpty());
+    }
+
+    @Test
+    @DisplayName("受保护路径不吃 allow 规则：用户批过 .myagent/** 也得再问（照 Claude Code：受保护路径哪种模式都不自动放行）")
+    void protectedPathsIgnoreAllowRules() throws Exception {
+        PolicyStore store = new PolicyStore(tmp.resolve("policy.json"));
+        store.save(ApprovalRules.of(List.of(ApprovalRule.of(ApprovalKind.WRITE, ".myagent/**", "d")), List.of()));
+        PolicyGate gate = new PolicyGate(recording(false), store);
+        ToolResult r = write(new WriteFileTool(new Workspace(tmp), new FileWriteGuard(), gate), ".myagent/agents/evil.md", "x");
+        assertFalse(r.ok(), r.content());
+        assertEquals(1, asked.size());
+    }
 }

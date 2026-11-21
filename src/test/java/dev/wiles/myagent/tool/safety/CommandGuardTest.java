@@ -321,6 +321,22 @@ class CommandGuardTest {
         assertNeedsApproval("echo " + "a".repeat(10_001));
     }
 
+    // ---------- 受保护路径（照 Claude Code） ----------
+
+    @Test
+    @DisplayName("往受保护路径写（重定向、cp、mv、touch、mkdir）要问：.myagent 里的类型定义、.git/hooks、shell 启动文件会在下次被执行")
+    void writesIntoProtectedPathsNeedApproval() {
+        assertNeedsApproval("echo x > .myagent/agents/evil.md");
+        assertNeedsApproval("echo 'alias ll=ls' >> .bashrc");          // 内容无害也要问：写的是启动文件
+        assertNeedsApproval("cp evil.sh .git/hooks/pre-commit");
+        assertNeedsApproval("mkdir -p .claude/hooks");
+        assertNeedsApproval("touch .mcp.json");
+        assertNeedsApproval("mv a.md .myagent/agents/a.md");
+        assertSafe("cat .myagent/agents/helper.md");      // 读不管
+        assertSafe("ls -la .git/hooks");
+        assertSafe("cp a.txt docs/myagent-notes.txt");    // 名字里带 myagent 的普通路径不算
+    }
+
     // ---------- 重定向的目标 ----------
 
     @Test

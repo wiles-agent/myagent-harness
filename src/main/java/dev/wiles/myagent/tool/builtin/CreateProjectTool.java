@@ -149,7 +149,7 @@ public final class CreateProjectTool implements Tool {
                 // 批量创建时逐个弹框会烦死人，所以只对真正要覆盖的那些问，
                 // 且把每个文件的变化幅度写进提示里
                 if (risk.needsApproval()) {
-                    ApprovalVerdict verdict = approval.decide(ApprovalRequest.write(
+                    ApprovalVerdict verdict = dev.wiles.myagent.tool.safety.FileWriteGuard.decide(approval, pathArg, ApprovalRequest.write(
                             "覆盖文件", pathArg, risk.reason(), diffAgainst(target, content)));
                     if (verdict.cancelled()) {
                         stopped = true;

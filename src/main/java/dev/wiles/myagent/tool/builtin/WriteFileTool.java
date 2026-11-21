@@ -93,7 +93,7 @@ public final class WriteFileTool implements Tool {
         if (risk.needsApproval()) {
             // 带上 diff。只说「原 30 行 → 新 45 行」的话，用户能做的判断只有
             // 「文件变长了」，而他要决定的是「这个改动对不对」
-            ApprovalVerdict verdict = approval.decide(ApprovalRequest.write(
+            ApprovalVerdict verdict = dev.wiles.myagent.tool.safety.FileWriteGuard.decide(approval, pathArg, ApprovalRequest.write(
                     "写入文件", pathArg, risk.reason(), diff));
             if (!verdict.approved()) {
                 return ToolResult.error(verdict.deniedMessage("用户拒绝覆盖 " + pathArg + "。"
