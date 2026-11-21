@@ -136,8 +136,12 @@ public final class ApprovalRules {
             return Outcome.ASK;
         }
         // deny 先看，而且只要一段撞上就整条拒——黑名单要悲观
+        // 规则先剥包装再比（照 Claude Code）：deny 越过任何赋值都要拦，原样也比一次
         for (String segment : segments) {
             ApprovalRule hit = firstCovering(deny, ApprovalKind.BASH, segment);
+            if (hit == null) {
+                hit = firstCovering(deny, ApprovalKind.BASH, CommandGuard.unwrapForRules(segment, true));
+            }
             if (hit != null) {
                 return new Outcome(Decision.DENY, hit);
             }
@@ -147,7 +151,11 @@ public final class ApprovalRules {
         // 有 `git add *` 也照样要问。守卫的「要审批」只出自逐段判定，所以跳过的正好是不该问的那些
         ApprovalRule last = null;
         for (String segment : segments) {
+            // allow 不越过赋值：LD_PRELOAD=… curl 不是用户批过的那条 curl
             ApprovalRule hit = firstCovering(allow, ApprovalKind.BASH, segment);
+            if (hit == null) {
+                hit = firstCovering(allow, ApprovalKind.BASH, CommandGuard.unwrapForRules(segment, false));
+            }
             if (hit == null) {
                 if (GUARD.segmentIsSafe(segment)) {
                     continue;

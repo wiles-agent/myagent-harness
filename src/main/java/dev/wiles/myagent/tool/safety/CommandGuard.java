@@ -69,7 +69,7 @@ public final class CommandGuard {
             "find", "fd", "wc", "echo", "printf", "pwd", "cd", "which", "whereis",
             "type", "file", "stat", "du", "df", "tree", "realpath", "readlink",
             "diff", "sort", "uniq", "cut", "tr", "jq", "basename", "dirname",
-            "date", "sleep", "true", "false", "test", "env", "uname", "whoami",
+            "date", "sleep", "true", "false", "test", "uname", "whoami",
             "hostname", "seq", "yes", "touch", "mkdir", "cp", "awk", "sed",
             "java", "javac", "jar", "mvn", "gradle", "node", "npx", "deno",
             "python", "python3", "go", "rustc", "cargo", "make", "cmake", "dotnet");
@@ -224,6 +224,147 @@ public final class CommandGuard {
     }
 
     /**
+     * 包装命令：把后面的参数当命令跑。照 Claude Code 剥掉，按里面那条判——
+     * 不剥的话，命令名是 env / nohup，里面的 curl、rm 就跟着它的名声一起过了。
+     */
+    private static final Set<String> WRAPPERS = Set.of(
+            "timeout", "time", "nice", "nohup", "stdbuf", "command", "builtin", "xargs", "env");
+
+    /** 给它们赋值会改变后面实际跑的是哪个程序、加载什么代码。 */
+    private static final Set<String> SPECIAL_VARIABLES = Set.of(
+            "PATH", "IFS", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT", "BASH_ENV", "ENV",
+            "PROMPT_COMMAND", "SHELLOPTS", "BASHOPTS", "PS4", "NODE_OPTIONS", "PYTHONPATH",
+            "PYTHONSTARTUP", "PERL5OPT", "RUBYOPT", "GIT_SSH_COMMAND", "GIT_EXEC_PATH");
+
+    private static final Pattern ASSIGNMENT = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*=.*");
+
+    /**
+     * 剥完包装的样子。
+     *
+     * @param inner      真正跑的那条（剥不动时是剩下的部分）
+     * @param problem    剥不了、得问人的原因；能剥就是 null
+     * @param specialVar 前面给哪个特殊变量赋了值；没有就是 null
+     */
+    record Unwrapped(String inner, String problem, String specialVar) {
+    }
+
+    /**
+     * 剥掉前缀赋值和包装命令，套娃也剥到底：{@code nice nohup curl x} → {@code curl x}。
+     *
+     * @param pastAssignments false 时（给 allow 规则比对用）碰到赋值就整段原样返回：
+     *                        赋值可能改变命令的行为，用户批的是不带它的那条。deny 规则用 true，越过任何赋值都要拦
+     */
+    static Unwrapped unwrap(String segment, boolean pastAssignments) {
+        String trimmed = segment.trim();
+        if (trimmed.isEmpty()) {
+            return new Unwrapped("", null, null);
+        }
+        String[] t = trimmed.split("\\s+");
+        int n = t.length;
+        int i = 0;
+        String special = null;
+        while (i < n && ASSIGNMENT.matcher(t[i]).matches()) {
+            if (!pastAssignments) {
+                return new Unwrapped(trimmed, null, null);
+            }
+            special = special != null ? special : specialVariable(t[i]);
+            i++;
+        }
+        while (i < n) {
+            String tok = t[i];
+            String name = tok.substring(tok.lastIndexOf('/') + 1).toLowerCase(Locale.ROOT);
+            if (!WRAPPERS.contains(name)) {
+                break;
+            }
+            String next = i + 1 < n ? t[i + 1] : "";
+            switch (name) {
+                case "timeout" -> {                     // timeout [-s 信号] [-k 时长] 时长 命令
+                    i++;
+                    while (i < n && t[i].startsWith("-")) {
+                        i += Set.of("-s", "-k", "--signal", "--kill-after").contains(t[i]) ? 2 : 1;
+                    }
+                    i++;                                // 时长
+                }
+                case "nice" -> {                        // nice [-n 数] 命令
+                    i++;
+                    while (i < n && t[i].startsWith("-")) {
+                        i += "-n".equals(t[i]) ? 2 : 1;
+                    }
+                }
+                case "stdbuf" -> {                      // stdbuf -oL 命令 / stdbuf -o L 命令
+                    i++;
+                    while (i < n && t[i].startsWith("-")) {
+                        i += Set.of("-i", "-o", "-e").contains(t[i]) ? 2 : 1;
+                    }
+                }
+                case "time" -> {
+                    i++;
+                    while (i < n && t[i].startsWith("-")) {
+                        i++;
+                    }
+                }
+                case "nohup" -> i++;
+                case "command", "builtin" -> {
+                    if ("-v".equals(next) || "-V".equals(next)) {
+                        return new Unwrapped("", null, special);    // 查询形式：只是找命令在哪，不执行
+                    }
+                    i++;
+                    while (i < n && "-p".equals(t[i])) {
+                        i++;
+                    }
+                }
+                case "xargs" -> {
+                    if (next.startsWith("-")) {
+                        return new Unwrapped(String.join(" ", java.util.Arrays.copyOfRange(t, i, n)),
+                                null, special);     // 带参数的 xargs 不剥（照 Claude Code），按 xargs 本身判
+                    }
+                    i++;
+                }
+                case "env" -> {
+                    i++;
+                    while (i < n) {
+                        String a = t[i];
+                        if (Set.of("-i", "--ignore-environment", "-").contains(a) || a.startsWith("--unset=")) {
+                            i++;
+                        } else if ("-u".equals(a)) {
+                            i += 2;
+                        } else if (ASSIGNMENT.matcher(a).matches()) {
+                            if (!pastAssignments) {
+                                return new Unwrapped(trimmed, null, null);
+                            }
+                            special = special != null ? special : specialVariable(a);
+                            i++;
+                        } else if (a.startsWith("-")) {
+                            return new Unwrapped(String.join(" ", java.util.Arrays.copyOfRange(t, i, n)),
+                                    "env 带了认不全的参数 " + a + "，判断不了它会执行什么", special);
+                        } else {
+                            break;
+                        }
+                    }
+                    if (i >= n) {
+                        return new Unwrapped("", "env 不带命令会打印全部环境变量，里面可能有密钥", special);
+                    }
+                }
+                default -> {
+                    return new Unwrapped(String.join(" ", java.util.Arrays.copyOfRange(t, i, n)), null, special);
+                }
+            }
+        }
+        String inner = i >= n ? "" : String.join(" ", java.util.Arrays.copyOfRange(t, i, n));
+        return new Unwrapped(inner, null, special);
+    }
+
+    private static String specialVariable(String assignment) {
+        String name = assignment.substring(0, assignment.indexOf('='));
+        return SPECIAL_VARIABLES.contains(name) || name.startsWith("DYLD_") ? name : null;
+    }
+
+    /** 给规则比对用：剥掉包装之后的那条。{@link #unwrap} 的 pastAssignments 见那里。 */
+    public static String unwrapForRules(String segment, boolean pastAssignments) {
+        return unwrap(segment, pastAssignments).inner();
+    }
+
+    /**
      * 这一段单拿出来，守卫会不会直接放行（既不禁止、也不用审批）。
      * 给 {@link ApprovalRules} 用：这样的段不需要授权规则罩着。
      */
@@ -232,7 +373,26 @@ public final class CommandGuard {
         return !risk.isForbidden() && !risk.needsApproval();
     }
 
+    /**
+     * 判一段：先剥包装，按里面那条判。禁止的照样禁止（剥出来的 sudo 不会因为前面多了个 PATH= 降级成问人），
+     * 剥不了或者改了特殊变量的，至少要问。
+     */
     private CommandRisk assessSegment(String segment) {
+        Unwrapped u = unwrap(segment, true);
+        CommandRisk inner = assessUnwrapped(u.inner());
+        if (inner.isForbidden() || inner.needsApproval()) {
+            return inner;
+        }
+        if (u.problem() != null) {
+            return CommandRisk.approval(u.problem());
+        }
+        if (u.specialVar() != null) {
+            return CommandRisk.approval("给 " + u.specialVar() + " 赋值会改变后面实际跑的是哪个程序");
+        }
+        return inner;
+    }
+
+    private CommandRisk assessUnwrapped(String segment) {
         String name = commandName(segment);
         if (name.isEmpty()) {
             return CommandRisk.safe();

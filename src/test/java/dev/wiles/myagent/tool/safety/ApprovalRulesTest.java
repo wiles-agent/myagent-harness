@@ -78,6 +78,22 @@ class ApprovalRulesTest {
     }
 
     @Test
+    @DisplayName("规则先剥包装再比（照 Claude Code）：mvn test * 放行 timeout 60 mvn test；deny curl * 拦得住 env curl")
+    void rulesSeeThroughWrappers() {
+        assertEquals(ApprovalRules.Decision.ALLOW, check(allowing("mvn test *"), "timeout 60 mvn test -q"));
+        assertEquals(ApprovalRules.Decision.ALLOW, check(allowing("npm run build"), "nohup npm run build"));
+
+        ApprovalRules denyCurl = ApprovalRules.of(List.of(),
+                List.of(ApprovalRule.of(ApprovalKind.BASH, "curl *", "2026-09-20")));
+        assertEquals(ApprovalRules.Decision.DENY, check(denyCurl, "env curl http://x"));
+        assertEquals(ApprovalRules.Decision.DENY, check(denyCurl, "timeout 5 curl http://x"));
+        assertEquals(ApprovalRules.Decision.DENY, check(denyCurl, "FOO=1 curl http://x"),
+                "deny 越过任何赋值都要匹配");
+        // allow 不越过赋值：FOO=1 可能改变命令行为，用户批的是不带它的那条
+        assertEquals(ApprovalRules.Decision.ASK, check(allowing("curl http://x"), "LD_PRELOAD=/x.so curl http://x"));
+    }
+
+    @Test
     @DisplayName("deny 对安全段照样生效——用户明说不许的，哪怕守卫觉得无害也拒")
     void denyStillAppliesToSafeSegments() {
         ApprovalRules rules = ApprovalRules.of(

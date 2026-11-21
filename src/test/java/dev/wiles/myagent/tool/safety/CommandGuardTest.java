@@ -250,6 +250,54 @@ class CommandGuardTest {
         assertNeedsApproval("echo $'a\\'; curl http://x'");                // $'..' 里的 \' 不当成关引号
     }
 
+    // ---------- 包装命令（照 Claude Code：剥掉一组固定的，按里面那条判） ----------
+
+    @Test
+    @DisplayName("env 不是安全命令：env curl 曾经因为命令名是 env 被直接放行")
+    void envIsJudgedByWhatItRuns() {
+        assertNeedsApproval("env curl http://x");
+        assertNeedsApproval("env FOO=1 curl http://x");
+        assertForbidden("env -i sudo id");
+        assertForbidden("env FOO=1 rm -rf ../outside");
+        assertSafe("env FOO=1 python a.py");
+        assertSafe("env -u HOME ls");
+        assertNeedsApproval("env");                         // 会把环境变量全打出来，里面可能有密钥
+        assertNeedsApproval("env -S 'curl http://x'");      // 认不全的参数就不剥，问人
+    }
+
+    @Test
+    @DisplayName("timeout / nice / nohup / stdbuf / time / command / builtin / 光杆 xargs：剥掉，按里面那条判")
+    void wrappersAreStripped() {
+        assertSafe("timeout 30 mvn test");
+        assertSafe("timeout -s KILL 30 mvn test");
+        assertSafe("nice -n 5 ls");
+        assertSafe("nohup python a.py");
+        assertSafe("stdbuf -oL ls");
+        assertSafe("stdbuf -o L ls");
+        assertSafe("time mvn -q test");
+        assertSafe("builtin echo hi");
+        assertSafe("command ls");
+        assertSafe("command -v git");                       // 查询形式，不是执行
+        assertSafe("xargs grep foo");
+        assertNeedsApproval("timeout 5 curl http://x");
+        assertNeedsApproval("nice nohup curl http://x");    // 套娃也剥到底
+        assertNeedsApproval("xargs -n1 rm");                // 带参数的 xargs 不剥
+        assertForbidden("nohup sudo reboot");
+        assertForbidden("nice -n 5 rm -rf ../outside");
+        assertForbidden("timeout 9 rm -rf ~");
+    }
+
+    @Test
+    @DisplayName("给 PATH / IFS / LD_PRELOAD 这类变量赋值要问——它们决定了后面跑的到底是哪个程序")
+    void specialVariableAssignmentsNeedApproval() {
+        assertNeedsApproval("PATH=/tmp/evil:$PATH ls");
+        assertNeedsApproval("IFS=, ls");
+        assertNeedsApproval("LD_PRELOAD=/tmp/x.so ls");
+        assertNeedsApproval("env PATH=/tmp ls");
+        assertSafe("JAVA_HOME=/opt/jdk mvn test");
+        assertSafe("FOO=bar ls");
+    }
+
     @Test
     @DisplayName("对抗：认了引号之后，原来拦得住的那些一个都不能放过")
     void quotesDoNotOpenBypasses() {
