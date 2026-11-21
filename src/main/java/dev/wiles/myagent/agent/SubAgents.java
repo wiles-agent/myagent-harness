@@ -51,7 +51,8 @@ import java.util.function.Supplier;
  *   <li><b>能复用</b>：{@code send_input} 给已有的子 agent 追加话（排队或打断），它的上下文还在；
  *       {@code close_agent} 关掉释放名额，{@code resume_agent} 再打开。</li>
  *   <li><b>上限</b>：同时开着的最多 {@link Settings#maxThreads()} 个（做完没关的也算，默认
- *       {@link #DEFAULT_MAX_THREADS}），深度 1——子 agent 的菜单上没有这五个工具（{@link #NEVER_FOR_CHILDREN}）
+ *       {@link #DEFAULT_MAX_THREADS}，整棵树一起算），深度默认 1——子 agent 的菜单上没有这五个工具（{@link #NEVER_FOR_CHILDREN}）；
+ *       {@code MYAGENT_SUBAGENT_DEPTH} 放开时，没到最深一层的子 agent 有自己的一层（见 {@link Tree}）
  *       （Codex 是 {@code agent_max_threads = 6}、{@code agent_max_depth = 1}；并发先压到 3，
  *       cookiecutter 上几个 agent 同时请求就撞 429，再按实验调）。</li>
  *   <li><b>派不派由模型按描述自己定</b>（照 Claude Code 的 Agent 工具）：工具常驻菜单，
@@ -90,9 +91,19 @@ public final class SubAgents implements Mailbox {
      * @param childMaxSteps      子 agent 每一轮的步数上限，{@code <= 0} 不限
      * @param childTimeoutMillis 子 agent 每一轮的墙钟时限，{@code <= 0} 不限
      * @param budget             和主 agent 共用的步数预算，null 表示不共用
+     * @param maxDepth           子 agent 能往下派几层：1 表示子 agent 不能再派（默认）。照 Claude Code 的
+     *                           {@code CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH}，但它默认 3、我们默认 1——评测里 flash 模型一层都很少派，
+     *                           默认放开只多一种失控的花钱方式。上限 5
      */
     public record Settings(int maxThreads, Set<String> roles, int childMaxSteps, long childTimeoutMillis,
-                           StepBudget budget, String model, boolean forceModel) {
+                           StepBudget budget, String model, boolean forceModel, int maxDepth) {
+
+        static final int MAX_DEPTH_LIMIT = 5;
+
+        public Settings(int maxThreads, Set<String> roles, int childMaxSteps, long childTimeoutMillis,
+                        StepBudget budget, String model, boolean forceModel) {
+            this(maxThreads, roles, childMaxSteps, childTimeoutMillis, budget, model, forceModel, 1);
+        }
 
         /**
          * 不指定模型：子 agent 跟主对话一样。
@@ -102,12 +113,15 @@ public final class SubAgents implements Mailbox {
          */
         public Settings(int maxThreads, Set<String> roles, int childMaxSteps, long childTimeoutMillis,
                         StepBudget budget) {
-            this(maxThreads, roles, childMaxSteps, childTimeoutMillis, budget, null, false);
+            this(maxThreads, roles, childMaxSteps, childTimeoutMillis, budget, null, false, 1);
         }
 
         public Settings {
             if (maxThreads <= 0) {
                 throw new IllegalArgumentException("子 agent 并发上限要大于 0: " + maxThreads);
+            }
+            if (maxDepth < 1 || maxDepth > MAX_DEPTH_LIMIT) {
+                throw new IllegalArgumentException("MYAGENT_SUBAGENT_DEPTH 要在 1 到 " + MAX_DEPTH_LIMIT + " 之间: " + maxDepth);
             }
             roles = Set.copyOf(roles);
             model = AgentDefinition.normalizeModel(model);
@@ -143,7 +157,8 @@ public final class SubAgents implements Mailbox {
                     intOr(env.apply("MYAGENT_SUBAGENT_TIMEOUT"), (int) (DEFAULT_CHILD_TIMEOUT_MILLIS / 1000)) * 1000L,
                     budget, env.apply("MYAGENT_SUBAGENT_MODEL"),
                     Set.of("1", "true", "yes", "on").contains(String.valueOf(env.apply("MYAGENT_SUBAGENT_MODEL_FORCE"))
-                            .strip().toLowerCase(Locale.ROOT)));
+                            .strip().toLowerCase(Locale.ROOT)),
+                    intOr(env.apply("MYAGENT_SUBAGENT_DEPTH"), 1));
         }
 
         public static int intOr(String value, int fallback) {
@@ -171,6 +186,7 @@ public final class SubAgents implements Mailbox {
                 o.put("model", model);
                 o.put("forceModel", forceModel);
             }
+            o.put("maxDepth", maxDepth);
             return o;
         }
     }
@@ -274,6 +290,8 @@ public final class SubAgents implements Mailbox {
         String name;
         /** 这一轮是撞了步数上限收的尾：没做完，不是做坏了。 */
         boolean hitLimit;
+        /** 它自己派出去的子 agent（没到最深一层才有）。它被关掉、会话结束时一起收。 */
+        SubAgents nested;
 
         // ---- 框架看到的事实（写进通知，不靠它自己说） ----
         /** 写文件工具成功写过的路径。bash 里写的看不到。 */
@@ -301,6 +319,42 @@ public final class SubAgents implements Mailbox {
     /** 主 agent 收件箱里的一条：哪个子 agent 的、说什么。wait_agent 拿过结果的会被撤掉。 */
     private record Notice(String agentId, String text) {
     }
+
+    /**
+     * 整棵子 agent 树共用的那份：所有层的实例，和「开着的子 agent」计数。
+     *
+     * <h3>为什么计数用原子量、不用各层的锁</h3>
+     * 照 Claude Code，并发上限按整个会话算——不然 3 层每层 3 个就是 39 个同时在跑。各层各有一把锁，
+     * 拿着自己的锁去数别层的，两层同时这么干就互相等死。所以名额是原子量：派出前预留、关掉时归还，不碰别人的锁。
+     */
+    static final class Tree {
+        final List<SubAgents> members = new java.util.concurrent.CopyOnWriteArrayList<>();
+        final java.util.concurrent.atomic.AtomicInteger open = new java.util.concurrent.atomic.AtomicInteger();
+
+        boolean tryReserve(int max) {
+            while (true) {
+                int n = open.get();
+                if (n >= max) {
+                    return false;
+                }
+                if (open.compareAndSet(n, n + 1)) {
+                    return true;
+                }
+            }
+        }
+
+        void release() {
+            open.updateAndGet(n -> Math.max(0, n - 1));
+        }
+    }
+
+    private final Tree tree;
+    /** 这一层派出去的子 agent 在第几层：主对话派的是 1。 */
+    private final int level;
+    /** 嵌套的这一层归哪个子 agent（它的 id）；顶层是 null。 */
+    private final String ownerId;
+    /** 上一层；顶层是 null。写入归属要放过祖先：worker 把自己负责的文件再分给它派出的子 agent，是正常的委派。 */
+    private final SubAgents up;
 
     private final Object lock = new Object();
     private final Map<String, Child> children = new LinkedHashMap<>();
@@ -376,6 +430,77 @@ public final class SubAgents implements Mailbox {
         this.contexts = contexts;
         this.settings = settings;
         this.events = events == null ? (id, e) -> { } : events;
+        this.tree = new Tree();
+        this.level = 1;
+        this.ownerId = null;
+        this.up = null;
+        tree.members.add(this);
+    }
+
+    /**
+     * 子 agent {@code owner} 自己的那一层：它派出去的子 agent 归这个实例管。菜单从它自己的工具里筛，
+     * 别的配置（类型定义、模型、技能、MCP、只读开关）照上一层。
+     */
+    private SubAgents(SubAgents up, ToolRegistry ownerTools, String owner) {
+        this.clients = up.clients;
+        this.allTools = ownerTools;
+        this.root = up.root;
+        this.contexts = up.contexts;
+        this.settings = up.settings;
+        this.events = up.events;
+        this.tree = up.tree;
+        this.level = up.level + 1;
+        this.ownerId = owner;
+        this.up = up;
+        this.readOnly = up.readOnly;
+        this.readOnlyPolicy = up.readOnlyPolicy;
+        this.definitions = up.definitions;
+        this.clientFactory = up.clientFactory;
+        this.thinkingSupported = up.thinkingSupported;
+        this.skills = up.skills;
+        this.mcpLauncher = up.mcpLauncher;
+        tree.members.add(this);
+    }
+
+    /** 这一层所有祖先子 agent 的 id（它们独占的文件，这一层的子 agent 可以写——那是委派下来的活）。 */
+    private Set<String> ancestors() {
+        Set<String> out = new java.util.HashSet<>();
+        for (SubAgents s = this; s != null; s = s.up) {
+            if (s.ownerId != null) {
+                out.add(s.ownerId);
+            }
+        }
+        return out;
+    }
+
+    /** 这一层眼下在跑、独占着文件的子 agent：id → 它负责的路径。只拿自己的锁。 */
+    private Map<String, List<Path>> runningOwners() {
+        synchronized (lock) {
+            Map<String, List<Path>> out = new LinkedHashMap<>();
+            for (Child c : children.values()) {
+                if (c.running && !c.closed && !c.owns.isEmpty()) {
+                    out.put(c.id, c.owns);
+                }
+            }
+            return out;
+        }
+    }
+
+    /** 树上<b>别的层</b>在跑、独占着文件的子 agent，去掉祖先。逐个拿各层的锁，不嵌套，不会互相等死。 */
+    private Map<String, List<Path>> foreignOwners() {
+        Set<String> skip = ancestors();
+        Map<String, List<Path>> out = new LinkedHashMap<>();
+        for (SubAgents m : tree.members) {
+            if (m == this) {
+                continue;
+            }
+            m.runningOwners().forEach((id, paths) -> {
+                if (!skip.contains(id)) {
+                    out.put(id, paths);
+                }
+            });
+        }
+        return out;
     }
 
     /**
@@ -612,7 +737,8 @@ public final class SubAgents implements Mailbox {
         try {
             return awaitStopped(graceMillis);
         } finally {
-            closeLaunched();        // 无头运行退出前只走这里不走 shutdown：内联拉起的 MCP 进程也得在这儿关
+            // 无头运行退出前只走这里不走 shutdown：各层内联拉起的 MCP 进程也得在这儿关
+            tree.members.forEach(SubAgents::closeLaunched);
         }
     }
 
@@ -708,11 +834,18 @@ public final class SubAgents implements Mailbox {
 
     @Override
     public void shutdown() {
+        List<SubAgents> below = new ArrayList<>();
         synchronized (lock) {
             for (Child child : children.values()) {
+                if (!child.closed) {
+                    tree.release();
+                }
                 child.closed = true;
                 if (child.running) {
                     child.agent.cancel();
+                }
+                if (child.nested != null) {
+                    below.add(child.nested);
                 }
             }
             children.clear();
@@ -721,7 +854,11 @@ public final class SubAgents implements Mailbox {
             reminded.clear();
             lock.notifyAll();
         }
+        below.forEach(SubAgents::shutdown);      // 锁外收下一层：不拿着自己的锁去拿别人的
         closeLaunched();
+        if (level > 1) {
+            tree.members.remove(this);          // 嵌套的这一层收了就从树上摘掉；顶层留着
+        }
     }
 
     /** 为子 agent 内联拉起的 MCP server 全关掉：它们是子进程，不关就是孤儿。 */
@@ -848,6 +985,16 @@ public final class SubAgents implements Mailbox {
      * 界面要显示「scout · finder」、按类型定义的颜色上色，得从这里拿。不认识的 id 是 null。
      */
     public ObjectNode describe(String id) {
+        for (SubAgents m : tree.members) {       // 孙子的事件也走同一条通道，界面要认得它是谁
+            ObjectNode d = m.describeLocal(id);
+            if (d != null) {
+                return d;
+            }
+        }
+        return null;
+    }
+
+    private ObjectNode describeLocal(String id) {
         synchronized (lock) {
             Child c = children.get(id);
             if (c == null) {
@@ -1250,10 +1397,27 @@ public final class SubAgents implements Mailbox {
      * 子 agent 交了结果（不在跑了），它那片就放开，主 agent 可以接着整合。
      */
     String checkWrite(String writer, List<String> paths) {
+        Map<String, List<Path>> foreign = foreignOwners();     // 先在锁外拿别层的，见 foreignOwners
         synchronized (lock) {
             Child self = children.get(writer);
             for (String raw : paths) {
                 Path p = resolve(raw);
+                for (Map.Entry<String, List<Path>> other : foreign.entrySet()) {
+                    if (other.getKey().equals(writer)) {
+                        continue;
+                    }
+                    for (Path o : other.getValue()) {
+                        if (p.startsWith(o)) {
+                            if (self != null) {
+                                self.refusals++;
+                            } else {
+                                mainRefusals++;
+                            }
+                            return show(p) + " 现在归 " + other.getKey() + "（另一层的子 agent，正在跑）。"
+                                    + "等它交回结果再改；需要改的话写进答复，交给派你的那一层。";
+                        }
+                    }
+                }
                 for (Child c : children.values()) {
                     if (c.id.equals(writer) || !c.running || c.closed) {
                         continue;
@@ -1405,10 +1569,19 @@ public final class SubAgents implements Mailbox {
                     return ToolResult.error("owns 要是工作区里的具体文件或目录，不能是整个工作区: " + o);
                 }
             }
-            synchronized (lock) {
-                if (open() >= settings.maxThreads()) {
-                    return ToolResult.error("已经开着 " + settings.maxThreads() + " 个子 agent 了（做完没关的也占名额）。"
-                            + "先用 close_agent 关掉不再需要的，或者自己做。");
+            if (tree.open.get() >= settings.maxThreads()) {       // 先粗看一眼；真正的预留在入册那一刻
+                return ToolResult.error("已经开着 " + settings.maxThreads() + " 个子 agent 了（做完没关的也占名额，"
+                        + "整个会话、各层一起算）。先用 close_agent 关掉不再需要的，或者自己做。");
+            }
+            Map<String, List<Path>> foreign = foreignOwners();
+            for (Path o : owns) {
+                for (Map.Entry<String, List<Path>> other : foreign.entrySet()) {
+                    for (Path theirs : other.getValue()) {
+                        if (o.startsWith(theirs) || theirs.startsWith(o)) {
+                            return ToolResult.error(show(o) + " 和另一层正在跑的 " + other.getKey() + " 负责的 "
+                                    + show(theirs) + " 重叠了。写入范围要互不相交");
+                        }
+                    }
                 }
             }
             synchronized (lock) {
@@ -1449,8 +1622,14 @@ public final class SubAgents implements Mailbox {
             boolean fork = role == AgentDefinitions.FORK;
             // fork：系统提示词、工具、历史都和主对话一样，前缀缓存整段命中；
             // 别的类型：自己的系统提示词、筛过的工具、从零开始（照 Claude Code）
+            ToolRegistry childTools = fork ? forkTools(id) : toolsFor(role, id);
+            // 没到最深一层：给它自己的一层，派遣工具进它的菜单（fork 不再往下派，照 Claude Code「fork 不能再 fork」）
+            SubAgents nested = !fork && level < settings.maxDepth() ? new SubAgents(SubAgents.this, childTools, id) : null;
+            if (nested != null) {
+                childTools.registerAll(nested.tools());
+            }
             Agent agent = new Agent(model == null && thinking == null ? clients.get() : factory.create(model, thinking),
-                    fork ? forkTools(id) : toolsFor(role, id),
+                    childTools,
                     fork ? parentAgent.systemPrompt()
                             : SystemPrompt.forSubagent(root, role, readOnlyPolicy, preloadedSkills(role)),
                     role.maxTurns() > 0 ? role.maxTurns() : settings.childMaxSteps(), contexts.get())
@@ -1466,6 +1645,10 @@ public final class SubAgents implements Mailbox {
             Child child = new Child(id, role, agent, owns);
             child.model = model;
             child.name = name;
+            child.nested = nested;
+            if (nested != null) {
+                nested.parent = agent;
+            }
             agent.withMailbox(new ChildInbox(child));
             agent.onEvent(event -> {
                 if (event instanceof AgentEvent.Failed f) {
@@ -1478,8 +1661,11 @@ public final class SubAgents implements Mailbox {
                 events.accept(id, event);
             });
             synchronized (lock) {
-                if (open() >= settings.maxThreads()) {      // 两次检查之间别人也派了
-                    return ToolResult.error("已经开着 " + settings.maxThreads() + " 个子 agent 了，先 close_agent 关掉不需要的");
+                if (!tree.tryReserve(settings.maxThreads())) {      // 两次检查之间别人（别的层）也派了
+                    if (nested != null) {
+                        nested.shutdown();
+                    }
+                    return ToolResult.error("已经开着 " + settings.maxThreads() + " 个子 agent 了（各层一起算），先 close_agent 关掉不需要的");
                 }
                 children.put(id, child);
                 String task = owns.isEmpty() ? message
@@ -1674,6 +1860,10 @@ public final class SubAgents implements Mailbox {
                 JsonNode previous = status(child);
                 if (child != null && !child.closed) {
                     child.closed = true;
+                    tree.release();
+                    if (child.nested != null) {
+                        child.nested.shutdown();        // 它派出去的一起收，名额一起还
+                    }
                     child.beforeClose = child.state;
                     child.queued.clear();
                     child.interruptWith = null;
@@ -1723,11 +1913,11 @@ public final class SubAgents implements Mailbox {
                     return ToolResult.error("没有这个子 agent: " + id);
                 }
                 if (child.closed) {
-                    if (open() >= settings.maxThreads()) {
-                        return ToolResult.error("已经开着 " + settings.maxThreads() + " 个子 agent 了，先 close_agent 关掉不需要的");
-                    }
                     if (child.running) {
                         return ToolResult.error(id + " 还在收尾，稍后再试");
+                    }
+                    if (!tree.tryReserve(settings.maxThreads())) {
+                        return ToolResult.error("已经开着 " + settings.maxThreads() + " 个子 agent 了，先 close_agent 关掉不需要的");
                     }
                     child.closed = false;
                     child.state = child.beforeClose == null || child.beforeClose == State.RUNNING
@@ -1850,37 +2040,66 @@ public final class SubAgents implements Mailbox {
             this.child = child;
         }
 
+        /** 两路信：上一层追加给它的指示，和它自己派出去的子 agent 交回的结果（有下一层才有）。 */
         @Override
         public List<String> drain() {
+            List<String> out = new ArrayList<>();
             synchronized (lock) {
-                List<String> out = child.queued.stream().map(SubAgents::agentMessage).toList();
+                child.queued.stream().map(SubAgents::agentMessage).forEach(out::add);
                 child.queued.clear();
-                return out;
             }
+            SubAgents below = child.nested;
+            if (below != null) {
+                out.addAll(below.drain());       // 锁外：不拿着这一层的锁去拿下一层的
+            }
+            return out;
         }
 
         @Override
         public boolean hasMail() {
             synchronized (lock) {
-                return !child.queued.isEmpty();
+                if (!child.queued.isEmpty()) {
+                    return true;
+                }
             }
+            SubAgents below = child.nested;
+            return below != null && below.hasMail();
         }
 
         @Override
         public boolean busy() {
-            return false;          // 子 agent 没有自己的子 agent
+            SubAgents below = child.nested;
+            return below != null && below.busy();
         }
 
         @Override
-        public void awaitChange(long millis) {
+        public void awaitChange(long millis) throws InterruptedException {
+            SubAgents below = child.nested;
+            if (below != null) {
+                below.awaitChange(millis);
+            }
         }
 
         @Override
         public void interruptAll() {
+            SubAgents below = child.nested;
+            if (below != null) {
+                below.interruptAll();             // 它被叫停，它派出去的一起停
+            }
         }
 
         @Override
         public void shutdown() {
+            SubAgents below = child.nested;
+            if (below != null) {
+                below.shutdown();
+            }
+        }
+
+        @Override
+        public String beforeFinish() {
+            SubAgents below = child.nested;
+            return below == null ? null : below.beforeFinish();    // 它派出去的改了文件，它交卷前也得验
         }
     }
 }

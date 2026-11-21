@@ -297,7 +297,10 @@ myagent 一步都不插手。`--isolated` 每次开临时 profile，进程一死
     前缀缓存整段命中，所以最便宜。适合要交代的背景太多、或者想从同一个起点并行试几种做法的时候。
     派遣和进出 plan 模式的工具留在它的菜单上（拿掉的话工具定义变了、缓存就丢了），调了会被拒绝。
     `fork` 是保留名，自定义类型不能叫这个。以前的 `fork_context` 参数撤了，换成派 `fork`。
-- 子 agent 不能再派（深度 1）。主 agent 交卷前会等还在跑的子 agent；按停时它们一起停。
+- 默认子 agent 不能再派（深度 1）。`MYAGENT_SUBAGENT_DEPTH=2`（最多 5）放开嵌套（照 Claude Code，它默认 3 层；我们默认 1：
+  评测里 flash 模型一层都很少派，默认放开只多一种失控的花钱方式）。放开后：没到最深一层的子 agent 有自己的派遣工具，
+  它派出去的结果送回它；并发上限 `MYAGENT_SUBAGENT_MAX` 整棵树一起算；写入归属跨层生效（祖先独占的文件可以写——那是委派下来的活）；
+  叫停、关掉、会话结束都沿着树往下传。fork 不再往下派。主 agent 交卷前会等还在跑的子 agent；按停时它们一起停。
 - 派的时候可以用 `name` 起名字（照 Claude Code）：之后 `send_input` / `wait_agent` / `close_agent` / `resume_agent`
   写名字和写 id 一样。名字是小写字母开头的 `a-z0-9-_`，不超过 32 个字符，不能写成 `agent-数字`（那是 id 的样子）。
   同名再派一个，名字就归新的那个，旧的只能用 id 找。
@@ -322,6 +325,7 @@ myagent 一步都不插手。`--isolated` 每次开临时 profile，进程一死
 | `MYAGENT_SUBAGENT_STEPS` | 同主 agent | 子 agent 每一轮的步数上限 |
 | `MYAGENT_SUBAGENT_TIMEOUT` | `1800` | 子 agent 每一轮的时限（秒），超时按出错交回 |
 | `MYAGENT_TOTAL_STEPS` | 不设 | 主 agent 和子 agent 共用的步数预算（算力对齐的对照用） |
+| `MYAGENT_SUBAGENT_DEPTH` | `1` | 子 agent 能往下派几层（1～5），1 就是不嵌套 |
 | `MYAGENT_SUBAGENT_MODEL` | 不设 | 子 agent 的默认模型（同一个服务、同一把 key）；不设就跟主对话一样 |
 | `MYAGENT_SUBAGENT_MODEL_FORCE` | 不设 | 设成 `1`：所有子 agent 都用上面那个模型，压过调用参数和类型定义（fork 除外） |
 

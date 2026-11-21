@@ -456,6 +456,74 @@ class SubAgentsTest {
     }
 
     @Test
+    @DisplayName("嵌套（深度 2）：子 agent 有派遣工具、最深一层没有；子 agent 等得到孙子的结果；顶层 describe 认得孙子")
+    void nestedSpawningUpToTheDepthLimit() throws Exception {
+        Script child = new Script()
+                .call("spawn_agent", "{\"message\":\"查细节\",\"agent_type\":\"explorer\"}")
+                .call("wait_agent", m -> "{\"targets\":[\"" + lastAgentId(m) + "\"]}")
+                .reply("子 agent 汇总完了");
+        Script grand = new Script().reply("孙子查完了");
+        Rig rig = new Rig(SubAgents.Mode.ON, 0, settings(Map.of("MYAGENT_SUBAGENT_DEPTH", "2"), 0, null), child, grand);
+
+        String id = rig.spawn(Map.of("message", "查", "agent_type", "default"));
+        awaitIdle(rig.subagents);
+        assertTrue(child.menus.get(0).contains("spawn_agent"), child.menus.get(0).toString());
+        assertFalse(grand.menus.get(0).contains("spawn_agent"), "最深一层不给派遣工具");
+        String waited = child.seen.get(2).get(child.seen.get(2).size() - 1).content();
+        assertTrue(waited.contains("孙子查完了"), waited);
+        assertEquals("子 agent 汇总完了", M.readTree(rig.exec("wait_agent", Map.of("targets", List.of(id))).content())
+                .path("status").path(id).path("completed").asText());
+
+        String grandId = lastAgentId(child.seen.get(1));
+        assertEquals("explorer", rig.subagents.describe(grandId).path("type").asText(), "界面要认得孙子是谁");
+    }
+
+    @Test
+    @DisplayName("嵌套：并发上限整棵树共用（照 Claude Code 按会话算）——上限 1 时子 agent 再派被拒")
+    void concurrencyLimitIsSharedAcrossTheTree() throws Exception {
+        Script child = new Script().call("spawn_agent", "{\"message\":\"x\",\"agent_type\":\"explorer\"}").reply("派不出去");
+        SubAgents.Settings one = settings(Map.of("MYAGENT_SUBAGENT_DEPTH", "2", "MYAGENT_SUBAGENT_MAX", "1"), 0, null);
+        Rig rig = new Rig(SubAgents.Mode.ON, 0, one, child);
+        rig.spawn(Map.of("message", "查", "agent_type", "default"));
+        awaitIdle(rig.subagents);
+        String refused = child.seen.get(1).get(child.seen.get(1).size() - 1).content();
+        assertTrue(refused.contains("已经开着"), refused);
+    }
+
+    @Test
+    @DisplayName("嵌套：写入归属跨层生效——孙子写不了叔叔正独占的文件")
+    void ownershipIsCheckedAcrossLevels() throws Exception {
+        CountDownLatch release = new CountDownLatch(1);
+        Script uncle = new Script();
+        uncle.steps.add(m -> {
+            try {
+                release.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return ChatMessage.assistant("我那份做完了");
+        });
+        Script parent = new Script()
+                .call("spawn_agent", "{\"message\":\"写 a\",\"agent_type\":\"default\"}")
+                .call("wait_agent", m -> "{\"targets\":[\"" + lastAgentId(m) + "\"]}")
+                .reply("汇总");
+        Script grand = new Script().call("write_file", "{\"path\":\"src/a.py\",\"content\":\"x\"}").reply("写完了");
+        Rig rig = new Rig(SubAgents.Mode.ON, 0, settings(Map.of("MYAGENT_SUBAGENT_DEPTH", "2"), 0, null),
+                uncle, parent, grand);
+
+        rig.spawn(Map.of("message", "改 a", "agent_type", "worker", "owns", List.of("src/a.py")));
+        rig.spawn(Map.of("message", "别的", "agent_type", "default"));
+        long until = System.currentTimeMillis() + 5_000;
+        while (grand.seen.size() < 2 && System.currentTimeMillis() < until) {
+            Thread.sleep(10);
+        }
+        String write = grand.seen.get(1).get(grand.seen.get(1).size() - 1).content();
+        assertTrue(write.contains("现在归"), "孙子越界写了叔叔独占的文件: " + write);
+        release.countDown();
+        awaitIdle(rig.subagents);
+    }
+
+    @Test
     @DisplayName("mcpServers：名字引用的那家工具照给（白名单没列也给）；内联的派出时单独拉起、只给它，会话结束一起关")
     void mcpServersForTheChild() throws Exception {
         Script refChild = new Script().reply("ok");
@@ -1076,6 +1144,10 @@ class SubAgentsTest {
         SubAgents.Settings d = settings(Map.of(), 100, null);
         assertEquals(3, d.maxThreads());
         assertEquals(java.util.Set.of(), d.roles());
+        assertEquals(1, d.maxDepth(), "默认不嵌套（Claude Code 默认 3 层，我们按评测保守取 1）");
+        assertEquals(3, settings(Map.of("MYAGENT_SUBAGENT_DEPTH", "3"), 1, null).maxDepth());
+        assertThrows(IllegalArgumentException.class, () -> settings(Map.of("MYAGENT_SUBAGENT_DEPTH", "0"), 1, null));
+        assertThrows(IllegalArgumentException.class, () -> settings(Map.of("MYAGENT_SUBAGENT_DEPTH", "9"), 1, null));
         assertEquals(100, d.childMaxSteps());
         assertEquals(30 * 60_000L, d.childTimeoutMillis());
 
