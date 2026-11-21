@@ -754,6 +754,36 @@ class SubAgentsTest {
         assertTrue(rig.exec("close_agent", Map.of("target", "scout")).ok());
         assertTrue(rig.exec("resume_agent", Map.of("id", "scout")).ok());
 
+        // 用名字给一个已经交了结果、通知还没送的追加活：上一轮的通知要撤掉，不然主 agent 会收到过期的结果
+        CountDownLatch hold = new CountDownLatch(1);
+        Script relay = new Script().reply("第一轮");
+        relay.steps.add(m -> {
+            try {
+                hold.await(10, TimeUnit.SECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            return ChatMessage.assistant("第二轮");
+        });
+        rig.children.add(relay);
+        rig.spawn(Map.of("message", "查 e", "agent_type", "explorer", "name", "relay"));
+        awaitIdle(rig.subagents);
+        assertTrue(rig.subagents.hasMail());
+        assertTrue(rig.exec("send_input", Map.of("target", "relay", "message", "再来")).ok());
+        assertFalse(rig.subagents.hasMail(), "第二轮还没完，第一轮的旧通知已经该撤了");
+        hold.countDown();
+        awaitIdle(rig.subagents);
+        rig.subagents.drain();
+
+        // 用名字关掉一个已经交了结果、通知还没送的：通知要一起撤掉（撤的时候得按真正的 id）
+        Script third = new Script().reply("没人要的结果");
+        rig.children.add(third);
+        rig.spawn(Map.of("message", "查 d", "agent_type", "explorer", "name", "dropme"));
+        awaitIdle(rig.subagents);
+        assertTrue(rig.subagents.hasMail());
+        assertTrue(rig.exec("close_agent", Map.of("target", "dropme")).ok());
+        assertFalse(rig.subagents.hasMail(), "用名字关掉的，它的通知也不该再送");
+
         ToolResult unknown = rig.exec("send_input", Map.of("target", "nobody", "message", "x"));
         assertFalse(unknown.ok());
         assertTrue(rig.subagents.report().path("children").get(0).path("name").asText().equals("scout"));

@@ -1472,7 +1472,7 @@ public final class SubAgents implements Mailbox {
                     return ToolResult.error(target + " 已经关掉了，先 resume_agent 再发");
                 }
                 if (!child.running) {
-                    notices.removeIf(n -> n.agentId().equals(target));   // 上一轮的结果它已经不需要了
+                    notices.removeIf(n -> n.agentId().equals(child.id));   // 上一轮的结果它已经不需要了（按 id：target 可能是名字）
                     startTurn(child, agentMessage(message));
                 } else if (interrupt) {
                     child.interruptWith = message;
@@ -1613,7 +1613,7 @@ public final class SubAgents implements Mailbox {
                     } else {
                         child.state = State.SHUTDOWN;
                     }
-                    notices.removeIf(n -> n.agentId().equals(target));
+                    notices.removeIf(n -> n.agentId().equals(child.id));    // 按真正的 id：用名字关时 target 是名字
                     lock.notifyAll();
                 }
                 ObjectNode out = JSON.createObjectNode();
