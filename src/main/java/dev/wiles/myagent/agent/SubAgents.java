@@ -294,6 +294,8 @@ public final class SubAgents implements Mailbox {
         SubAgents nested;
         /** {@code isolation: worktree} 时它干活的那个 worktree；否则 null。 */
         GitWorktree worktree;
+        /** permissionMode: auto 时替人审它的操作；否则 null。 */
+        dev.wiles.myagent.tool.safety.AutoReviewer reviewer;
 
         // ---- 框架看到的事实（写进通知，不靠它自己说） ----
         /** 写文件工具成功写过的路径。bash 里写的看不到。 */
@@ -420,6 +422,18 @@ public final class SubAgents implements Mailbox {
     }
 
     private volatile IsolatedTools isolatedTools;
+
+    /**
+     * 给 permissionMode: auto 的子 agent 造一个自动审查。
+     * 拿到的是主 agent 交代的任务（转述，不代表用户）和「它做过哪些工具调用」的实时清单。
+     */
+    @FunctionalInterface
+    public interface AutoReviewerFactory {
+        dev.wiles.myagent.tool.safety.AutoReviewer create(String delegation,
+                                                          java.util.function.Supplier<List<String>> toolCalls);
+    }
+
+    private volatile AutoReviewerFactory autoReviewers;
     /** 为子 agent 内联拉起的 server，会话结束时一起关。 */
     private final List<McpHandle> launched = new java.util.concurrent.CopyOnWriteArrayList<>();
     /** 服务认不认思考开关（会话自己配过 thinking 才算）。不认时 effort 不生效，免得给官方接口发它不认的字段。 */
@@ -477,6 +491,7 @@ public final class SubAgents implements Mailbox {
         this.skills = up.skills;
         this.mcpLauncher = up.mcpLauncher;
         this.isolatedTools = up.isolatedTools;
+        this.autoReviewers = up.autoReviewers;
         tree.members.add(this);
     }
 
@@ -619,6 +634,12 @@ public final class SubAgents implements Mailbox {
     }
 
     /** 接上「按根目录造工具」的办法：{@code isolation: worktree} 的子 agent 用它拿一套绑在 worktree 上的工具。 */
+    /** 接上自动审查：permissionMode: auto 的类型派出时用它造审查器。没接的话这种类型派不出去。 */
+    public SubAgents withAutoReviewer(AutoReviewerFactory factory) {
+        this.autoReviewers = factory;
+        return this;
+    }
+
     public SubAgents withIsolatedTools(IsolatedTools tools) {
         this.isolatedTools = tools;
         return this;
@@ -929,6 +950,19 @@ public final class SubAgents implements Mailbox {
         }
     }
 
+    /** 它做过的工具调用，「工具名 参数」一条一项——给自动审查看（只有调用，没有结果）。 */
+    private static List<String> toolCallsOf(Agent agent) {
+        List<String> out = new ArrayList<>();
+        for (dev.wiles.myagent.llm.ChatMessage m : agent.conversation()) {
+            if (m.hasToolCalls()) {
+                for (dev.wiles.myagent.llm.ToolCall c : m.toolCalls()) {
+                    out.add(c.name() + " " + (c.argumentsJson() == null ? "" : c.argumentsJson()));
+                }
+            }
+        }
+        return out;
+    }
+
     /** 这一层已经停下的子 agent 里，没改动的 worktree 收掉。锁里只拿清单，git 在锁外跑。 */
     private void cleanWorktrees() {
         List<GitWorktree> idle = new ArrayList<>();
@@ -986,7 +1020,8 @@ public final class SubAgents implements Mailbox {
         ApprovalOrigin who = originOf(child);
         Thread worker = new Thread(() -> {
             // 这条线程（和它为每次工具调用新开的线程）要的审批，都标明是这个子 agent，见 ApprovalScope
-            ApprovalScope.set(who, child.role.permissionMode() == AgentDefinition.PermissionMode.DONT_ASK);
+            ApprovalScope.set(who, child.role.permissionMode() == AgentDefinition.PermissionMode.DONT_ASK,
+                    child.reviewer);
             String text = null;
             Throwable error = null;
             try {
@@ -1587,6 +1622,7 @@ public final class SubAgents implements Mailbox {
             switch (role.permissionMode()) {      // 派之前就得知道：别把要改文件的活派给只读的类型
                 case PLAN -> roles.append("（只读）");
                 case DONT_ASK -> roles.append("（不问人：要审批的操作会被直接拒绝）");
+                case AUTO -> roles.append("（自动审查：要审批的操作由审查按用户的意图判，不问人）");
                 default -> { }
             }
             if (role.tools() != null) {
@@ -1721,6 +1757,11 @@ public final class SubAgents implements Mailbox {
             boolean fork = role == AgentDefinitions.FORK;
             // fork：系统提示词、工具、历史都和主对话一样，前缀缓存整段命中；
             // 别的类型：自己的系统提示词、筛过的工具、从零开始（照 Claude Code）
+            boolean auto = !fork && role.permissionMode() == AgentDefinition.PermissionMode.AUTO;
+            if (auto && autoReviewers == null) {
+                // 不能悄悄降级：降成问人，后台的它会卡住等人；降成放行，就是绕过了审批
+                return ToolResult.error("这个会话没接自动审查，" + role.name() + "（permissionMode: auto）派不出去。换一种类型派");
+            }
             GitWorktree worktree = null;
             if (!fork && role.isolation() == AgentDefinition.Isolation.WORKTREE) {
                 if (isolatedTools == null) {
@@ -1761,6 +1802,9 @@ public final class SubAgents implements Mailbox {
             child.name = name;
             child.nested = nested;
             child.worktree = worktree;
+            if (auto) {
+                child.reviewer = autoReviewers.create(message, () -> toolCallsOf(agent));
+            }
             if (nested != null) {
                 nested.parent = agent;
             }

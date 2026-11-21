@@ -601,6 +601,54 @@ class SubAgentsTest {
     }
 
     @Test
+    @DisplayName("permissionMode: auto：子 agent 的线程上挂着自动审查；审查拿得到交代的任务和它做过的工具调用；别的类型没有")
+    void autoModeChildGetsAReviewer() throws Exception {
+        List<String> seen = new CopyOnWriteArrayList<>();
+        List<String> delegations = new CopyOnWriteArrayList<>();
+        List<java.util.function.Supplier<List<String>>> calls = new CopyOnWriteArrayList<>();
+        Script auto = new Script().call("read_file", "{\"path\":\"a.py\"}").call("probe", "{}").reply("done");
+        Script plain = new Script().call("probe", "{}").reply("done");
+        Rig rig = new Rig(auto, plain);
+        rig.tools.register(new Tool() {
+            public String name() { return "probe"; }
+            public String description() { return "probe"; }
+            public String parametersSchema() { return "{\"type\":\"object\",\"properties\":{}}"; }
+            public ToolResult execute(JsonNode args) {
+                seen.add(dev.wiles.myagent.tool.safety.ApprovalScope.autoReviewer() == null ? "none" : "reviewer");
+                return ToolResult.ok("ok");
+            }
+        });
+        rig.subagents.withAutoReviewer((delegation, toolCalls) -> {
+                    delegations.add(delegation);
+                    calls.add(toolCalls);
+                    return request -> dev.wiles.myagent.tool.safety.ApprovalVerdict.yes();
+                })
+                .withDefinitions(AgentDefinitions.of(List.of(AgentDefinition.builder("auto-helper", "自己判")
+                        .source("t").permissionMode(AgentDefinition.PermissionMode.AUTO).build())));
+
+        rig.spawn(Map.of("message", "修 a.py", "agent_type", "auto-helper"));
+        awaitIdle(rig.subagents);
+        rig.spawn(Map.of("message", "看看", "agent_type", "default"));
+        awaitIdle(rig.subagents);
+
+        assertEquals(List.of("reviewer", "none"), seen);
+        assertEquals(List.of("修 a.py"), delegations, "审查要知道主 agent 交代了什么（标明不代表用户）");
+        assertTrue(calls.get(0).get().stream().anyMatch(c -> c.startsWith("read_file") && c.contains("a.py")),
+                "审查要看得见它做过的工具调用: " + calls.get(0).get());
+    }
+
+    @Test
+    @DisplayName("会话没接自动审查时，auto 的类型派不出去——不能悄悄降级成问人或全放行")
+    void autoModeNeedsAReviewer() throws Exception {
+        Rig rig = new Rig(new Script().reply("x"));
+        rig.subagents.withDefinitions(AgentDefinitions.of(List.of(AgentDefinition.builder("auto-helper", "自己判")
+                .source("t").permissionMode(AgentDefinition.PermissionMode.AUTO).build())));
+        ToolResult r = rig.exec("spawn_agent", Map.of("message", "x", "agent_type", "auto-helper"));
+        assertFalse(r.ok());
+        assertTrue(r.content().contains("自动审查"), r.content());
+    }
+
+    @Test
     @DisplayName("嵌套：子 agent 被 close_agent 关掉之后，摘要里它派过的孙子还在（关掉不等于没发生过）")
     void reportKeepsNestedChildrenAfterClose() throws Exception {
         Script child = new Script()

@@ -138,6 +138,22 @@ public final class AgentServer extends WebSocketServer {
     private final PolicyGate policy;
 
     /**
+     * 人在这段会话里说过的原话。自动审查只认这些算授权——对话历史里的 user 消息还混着
+     * 系统注入的提醒和子 agent 通知，不能拿来当「用户说的」。
+     */
+    private final List<String> humanMessages = new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    /** 自动审查用的模型：默认和会话同一个，MYAGENT_AUTO_MODEL 可换；不开思考、温度 0——要的是稳。 */
+    private LlmClient autoReviewClient() {
+        String model = System.getenv("MYAGENT_AUTO_MODEL");
+        Config c = model == null || model.isBlank() ? config : config.withModel(model.strip());
+        if (c.thinking() != null) {
+            c = c.withThinking(false);
+        }
+        return meter.meter(new DeepSeekClient(c).temperature(0));
+    }
+
+    /**
      * 当前往哪一份会话存档里写，以及这段对话是什么时候开始的。
      *
      * <p>{@code volatile}：存盘发生在 worker 线程，换 id 发生在连接线程。
@@ -258,7 +274,9 @@ public final class AgentServer extends WebSocketServer {
         //   RemoteApproval    真的去问界面，阻塞等答案
         // 顺序要紧：审计包在闸门里面，被规则直接放行的不产生审批记录——
         // 那条规则本身在存下来的那一刻已经记过一次了，再记一遍只会淹掉真正的决策
-        this.policy = new PolicyGate(audit.audited(approval), PolicyStore.inUserHome());
+        // 规则 → 留底 → auto 下交给自动审查 / dontAsk 下拒 → 问人（见 AutoReviewGate）
+        this.policy = new PolicyGate(audit.audited(new dev.wiles.myagent.tool.safety.AutoReviewGate(approval, true)),
+                PolicyStore.inUserHome());
         this.memory = MemoryStore.inUserHome();
         this.sessions = SessionStore.inUserHome();
         // 检查点：每条会动手的命令开跑前把工作区拍进影子仓库（不碰工作区自己的 .git）。
@@ -295,6 +313,10 @@ public final class AgentServer extends WebSocketServer {
                     .withIsolatedTools(wtRoot -> options.readOnly()
                             ? BuiltinTools.createReadOnly(new Workspace(wtRoot), memory)
                             : BuiltinTools.createDefault(new Workspace(wtRoot), policy, memory, new FileWriteGuard()))
+                    // permissionMode: auto 的子 agent：要问人的操作交给自动审查，按「人说过的话」判
+                    .withAutoReviewer((delegation, calls) -> new dev.wiles.myagent.tool.safety.AutoClassifier(
+                            autoReviewClient(), () -> new dev.wiles.myagent.tool.safety.AutoClassifier.Context(
+                                    List.copyOf(humanMessages), delegation, calls.get())))
                     .withMcpLauncher(servers -> {
                         // 类型定义里内联的 MCP server：和 mcp.json 里的同一种定义，派出时单独拉起
                         java.util.Map<String, dev.wiles.myagent.mcp.McpConfig.ServerSpec> specs = new java.util.LinkedHashMap<>();
@@ -682,6 +704,7 @@ public final class AgentServer extends WebSocketServer {
         // 先播「用户说了这句话」，再播 busy——顺序就是屏幕上该出现的顺序。
         // 少了这一条，另一块屏上会凭空冒出一段回答（协议 3.15）
         publish(Protocol.encodeUserMessage(text, planMode.on() ? "plan" : "normal", cid));
+        humanMessages.add(text);            // 自动审查只认人说过的话，见 AutoClassifier
         publish(Protocol.event("busy").put("busy", true));
         nameSession(text);
         checkpoints.mark(brief(text), agent.history().size());
@@ -1170,6 +1193,7 @@ public final class AgentServer extends WebSocketServer {
         if (agent != null) {
             agent.reset();
         }
+        humanMessages.clear();
         // 存档留着，不删：清空的意思是「眼前这段我不要了」，不是「这段从来没发生过」。
         // 想找回来还能从 sessions 列表里挑出来。和终端的 /clear 是同一条语义——
         // 两边不一致的话，同一个存档在两个界面里表现不同，那种 bug 没人查得动

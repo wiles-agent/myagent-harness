@@ -121,6 +121,13 @@ public final class Headless {
         }
     }
 
+    /** 自动审查用的模型：默认和会话同一个，MYAGENT_AUTO_MODEL 可换；不开思考。 */
+    private static dev.wiles.myagent.config.Config autoReviewConfig(dev.wiles.myagent.config.Config config) {
+        String model = System.getenv("MYAGENT_AUTO_MODEL");
+        var c = model == null || model.isBlank() ? config : config.withModel(model.strip());
+        return c.thinking() != null ? c.withThinking(false) : c;
+    }
+
     /** @return 进程退出码：0 正常收口，1 没做完（撞上限 / 验收没过 / 模型失败），2 参数或配置错 */
     public static int run(CliOptions options) {
         String prompt;
@@ -148,7 +155,11 @@ public final class Headless {
 
         Workspace workspace = new Workspace(options.workspace());
         MemoryStore memory = MemoryStore.inUserHome();
-        ToolRegistry tools = BuiltinTools.createDefault(workspace, ApprovalPolicy.approveAll(), memory);
+        // 无头没人可问：下一层是「全都批」。auto / dontAsk 的子 agent 由 AutoReviewGate 先截住，
+        // 审查交还给人时这里只能拒（交给「全都批」等于放行）
+        ApprovalPolicy headlessApproval = new dev.wiles.myagent.tool.safety.AutoReviewGate(
+                ApprovalPolicy.approveAll(), false);
+        ToolRegistry tools = BuiltinTools.createDefault(workspace, headlessApproval, memory);
         // MCP 默认不接：评测靠这条路径跑，结果不能随本机 ~/.myagent/mcp.json 变。
         // MYAGENT_MCP=on 才接，拿来比「接了某个 MCP server 前后」——和 MYAGENT_SUBAGENTS 同一种对照开关。
         // =eager 也接，但不延迟加载：工具说明直接进菜单。延迟时模型手里有 grep 就不会去 tool_search，
@@ -223,7 +234,11 @@ public final class Headless {
                         .withDefinitions(dev.wiles.myagent.agent.AgentDefinitions.forHeadless(System::getenv,
                                 workspace.root(), Path.of(System.getProperty("user.home"))))
                         .withIsolatedTools(wtRoot -> BuiltinTools.createDefault(
-                                new dev.wiles.myagent.tool.Workspace(wtRoot), ApprovalPolicy.approveAll(), memory))
+                                new dev.wiles.myagent.tool.Workspace(wtRoot), headlessApproval, memory))
+                        .withAutoReviewer((delegation, calls) -> new dev.wiles.myagent.tool.safety.AutoClassifier(
+                                meter.meter(new DeepSeekClient(autoReviewConfig(config)).temperature(0)),
+                                () -> new dev.wiles.myagent.tool.safety.AutoClassifier.Context(
+                                        java.util.List.of(prompt), delegation, calls.get())))
                         .withMcpLauncher(servers -> {
                         // 类型定义里内联的 MCP server：和 mcp.json 里的同一种定义，派出时单独拉起
                         java.util.Map<String, dev.wiles.myagent.mcp.McpConfig.ServerSpec> specs = new java.util.LinkedHashMap<>();

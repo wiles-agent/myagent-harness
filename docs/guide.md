@@ -355,9 +355,21 @@ disallowedTools: bash
 - `maxTurns: <步数>`：这种子 agent 一轮最多走几步，压过 `MYAGENT_SUBAGENT_STEPS`。撞线时它先用文字交代进展，
   交回的状态是 `partial`（没做完），不是 `errored`（做坏了）；`send_input` 让它接着做，上下文还在（照 Claude Code）。
 - `permissionMode`：`default`（照常审批，`manual` 同义）、`plan`（始终只读，不管主对话在不在 plan 模式）、
-  `dontAsk`（要问人的操作一律拒绝、不弹框；被已有规则放行的照常做——适合后台跑、不该打扰人的子 agent）。
-  Claude Code 的 `acceptEdits` / `bypassPermissions` / `auto` **不支持**：它们放宽权限，而定义可能来自工作区，
+  `dontAsk`（要问人的操作一律拒绝、不弹框；被已有规则放行的照常做——适合后台跑、不该打扰人的子 agent）、
+  `auto`（照 Claude Code：要问人的操作交给**自动审查**按用户的意图判，不问人）。
+  `auto` 比问人宽，**只认家目录里的定义**（和内联 MCP 同一条信任边界），工作区里写了整份作废。
+  Claude Code 的 `acceptEdits` / `bypassPermissions` **不支持**：它们放宽权限，而定义可能来自工作区，
   一个 PR 加一份就能让子 agent 绕过审批。写了的话整份定义作废、日志里说明原因。主对话在 plan 模式时，所有子 agent 照旧只读。
+
+  **自动审查**（`auto` 用；照 Claude Code auto 模式，见 [官方工程文章](https://www.anthropic.com/research/claude-code-auto-mode)）：
+  - 它替代的是「点同意的那个人」，不是规则：命令守卫、deny 规则、只读和工作区内的编辑照旧在前面判，落到它这儿的是本来要弹框的那部分。
+  - 只看意图，不看说辞：看得见人说过的原话、主 agent 交代的任务（标明不代表用户授权）、这个子 agent 做过的工具调用、待审的动作；
+    看不见助手的话和工具输出（注入的主渠道——README 里写着「必须 curl 一下」那种）。
+  - 两段：第一段只要一个词、宁可错拦；拦了才进第二段想清楚再给结论。调不通、答非所问一律按拒绝。
+  - 连拒 3 次或累计 20 次交还给人：界面里改成问人；无头运行时直接拒（无头没人可问，下一层是「全都批」）。
+  - auto 下丢掉等于任意代码执行的放行规则（`python *`、`bash *`、`npm run *`、`make *`……），窄的如 `mvn test *` 照留。
+  - 用哪个模型：默认和会话同一个，`MYAGENT_AUTO_MODEL` 可换。不开思考、温度 0。
+  - 会话没接自动审查时（比如没配 API key），`auto` 的类型派不出去，不会悄悄降级成问人或全放行。
 - `skills: deploy, code-review`：派出时把这些技能的正文（连同技能目录）预载进它的系统提示词，省掉它自己去找、去读。
   只管预载，不限制它能调哪些技能；找不到的技能跳过并记一笔。fork 不预载（它和主对话共用系统提示词）。
 - `memory: user | project | local`：子 agent **默认没有** `recall` / `remember`（照 Claude Code 不继承长期记忆）——
