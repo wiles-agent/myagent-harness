@@ -319,4 +319,19 @@ class ApprovalRulesTest {
         assertEquals(ApprovalRules.Decision.DENY,
                 rules.check(ApprovalRequest.read("app/.env")).decision(), "文件工具读也拦");
     }
+
+    @Test
+    @DisplayName("ask 规则（照 Claude Code）：deny > ask > allow——批过 git push origin main 也照样问；deny 了的直接拒")
+    void askRulesSitBetweenDenyAndAllow() {
+        ApprovalRules rules = ApprovalRules.of(
+                List.of(ApprovalRule.of(ApprovalKind.BASH, "git push origin main", "d")),
+                List.of(ApprovalRule.of(ApprovalKind.BASH, "git push --force *", "d")),
+                List.of(ApprovalRule.of(ApprovalKind.BASH, "git push *", "d")));
+        assertEquals(ApprovalRules.Decision.ALWAYS_ASK, check(rules, "git push origin main"));
+        assertEquals(ApprovalRules.Decision.ALWAYS_ASK, check(rules, "git status && timeout 60 git push origin main"));
+        assertEquals(ApprovalRules.Decision.DENY, check(rules, "git push --force origin main"));
+        assertEquals(ApprovalRules.Decision.ASK, check(rules, "rm -rf build"));
+        assertEquals(1, rules.plus(List.of(ApprovalRule.of(ApprovalKind.BASH, "mvn test *", "d"))).ask().size(),
+                "加放行规则不能把 ask 丢了");
+    }
 }

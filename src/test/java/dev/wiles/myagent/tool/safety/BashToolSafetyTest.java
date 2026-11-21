@@ -133,4 +133,19 @@ class BashToolSafetyTest {
         assertFalse(run(bash, "git log --oneline").ok(), "bash 的 deny 规则也对安全命令生效");
         assertTrue(run(bash, "echo ok").ok());
     }
+
+    @Test
+    @DisplayName("ask 规则对守卫判成安全的命令也生效：写了 ask git log * 就每次问")
+    void askRulesApplyToSafeCommands(@org.junit.jupiter.api.io.TempDir Path home) throws Exception {
+        PolicyStore store = new PolicyStore(home.resolve("policy.json"));
+        store.save(ApprovalRules.of(List.of(), List.of(), List.of(ApprovalRule.of(ApprovalKind.BASH, "git log *", "d"))));
+        List<String> asked = new java.util.ArrayList<>();
+        BashTool bash = tool(new PolicyGate(request -> {
+            asked.add(request.subject());
+            return ApprovalVerdict.no("不行");
+        }, store));
+        assertFalse(run(bash, "git log --oneline").ok());
+        assertEquals(List.of("git log --oneline"), asked);
+        assertTrue(run(bash, "echo ok").ok());
+    }
 }

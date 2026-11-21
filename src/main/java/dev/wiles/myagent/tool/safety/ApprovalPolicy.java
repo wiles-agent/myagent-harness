@@ -42,6 +42,11 @@ public interface ApprovalPolicy {
         return decide(request);
     }
 
+    /** 撞上了 ask 规则：这一下一定要问人（照 Claude Code）。只有规则层知道。 */
+    default boolean requiresHuman(ApprovalRequest request) {
+        return false;
+    }
+
     /** 非交互环境的安全默认值：没人能确认，那就都不批。 */
     static ApprovalPolicy denyAll() {
         return request -> ApprovalVerdict.no("当前没有可以确认的人，危险动作一律不执行。");

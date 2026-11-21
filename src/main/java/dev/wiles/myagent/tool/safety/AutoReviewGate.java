@@ -31,6 +31,17 @@ public final class AutoReviewGate implements ApprovalPolicy {
 
     @Override
     public ApprovalVerdict decide(ApprovalRequest request) {
+        if (ApprovalScope.humanRequired()) {
+            // 撞上 ask 规则：一定问人，审查不接；dontAsk 和无头都没人可问，只能拒
+            if (ApprovalScope.dontAsk()) {
+                return ApprovalVerdict.no("这个操作撞上了 ask 规则、必须问用户，但这个子 agent 是 dontAsk 模式，不做。"
+                        + "需要的话在答复里说明，交给主 agent");
+            }
+            if (!escalateToNext) {
+                return ApprovalVerdict.no("这个操作撞上了 ask 规则、必须问用户，但这里没有人可问（无头运行），不做");
+            }
+            return next.decide(request);
+        }
         AutoReviewer reviewer = ApprovalScope.autoReviewer();
         if (reviewer != null) {
             ApprovalVerdict verdict = reviewer.review(request);

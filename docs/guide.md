@@ -633,6 +633,11 @@ WebSocket 服务，握手信息（端口 + 一次性 token）打在 stdout。照
 的参数和输入重定向（`< .env`）。光写文件名哪一层都算。脚本里再去读的（`python app.py` 自己 open）管不着——
 要硬边界用沙箱（和 Claude Code 一样）。
 
+**ask 规则**（照 Claude Code 的 `permissions.ask`）：`"ask": [{"tool": "bash", "match": "git push *"}]`。
+优先级 deny > ask > allow——批过 `git push origin main` 也照样问。撞上 ask 规则**一定问人**：auto 下不交给审查，
+沙箱里的自动放行不算数，守卫判成安全的命令也问；`dontAsk` 和无头运行没人可问，直接拒。
+对 bash 每条命令都生效；对写文件和联网，在它们本来就要判审批的时候生效。
+
 **受保护路径**（照 Claude Code）：`.myagent/`、`.claude/`、`.mcp.json`、shell 启动文件、`.gitconfig`、`.git/hooks`、`.git/config`。
 写它们哪种模式都要问——新建也问、能回滚也问，**不吃 allow 规则**：改了它们，下次 agent 的类型定义、hook 或 shell 就会执行里面的东西。
 

@@ -188,4 +188,34 @@ class PolicyGateTest {
         assertTrue(gate.decide(ApprovalRequest.bash("python -c 'import os'", "")).approved(),
                 "不在 auto 下，用户的规则照常生效");
     }
+
+    @Test
+    @DisplayName("ask 规则一定问人（照 Claude Code）：auto 下也不交给审查；dontAsk 下直接拒")
+    void askRulesAlwaysReachTheHuman() {
+        store().save(ApprovalRules.of(List.of(), List.of(),
+                List.of(ApprovalRule.of(ApprovalKind.BASH, "git push *", "d"))));
+        PolicyGate gate = new PolicyGate(audited(new AutoReviewGate(human(ApprovalVerdict.yes()), true)), store());
+        List<String> reviewed = new ArrayList<>();
+        try {
+            ApprovalScope.set(null, false, request -> {
+                reviewed.add(request.subject());
+                return ApprovalVerdict.yes();
+            });
+            assertTrue(gate.decide(ApprovalRequest.bash("git push origin main", "")).approved());
+            assertEquals(List.of("git push origin main"), asked, "auto 下 ask 规则也得问人");
+            assertTrue(reviewed.isEmpty(), "不该交给审查: " + reviewed);
+            assertTrue(gate.requiresHuman(ApprovalRequest.bash("git push origin main", "")));
+
+            asked.clear();
+            ApprovalScope.set(null, true);
+            assertFalse(gate.decide(ApprovalRequest.bash("git push origin main", "")).approved(), "dontAsk 下直接拒");
+            assertTrue(asked.isEmpty());
+        } finally {
+            ApprovalScope.clear();
+        }
+    }
+
+    private static ApprovalPolicy audited(ApprovalPolicy p) {
+        return p;
+    }
 }

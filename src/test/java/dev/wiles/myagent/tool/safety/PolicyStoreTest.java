@@ -135,4 +135,14 @@ class PolicyStoreTest {
                 List.of(ApprovalRule.of(ApprovalKind.BASH, "ls *", "d")), List.of()));
         assertTrue(store.lastModified() > 0);
     }
+
+    @Test
+    @DisplayName("ask 规则存得下、读得回")
+    void askRulesRoundTrip(@org.junit.jupiter.api.io.TempDir java.nio.file.Path dir) {
+        PolicyStore store = new PolicyStore(dir.resolve("policy.json"));
+        store.save(ApprovalRules.of(java.util.List.of(), java.util.List.of(),
+                java.util.List.of(ApprovalRule.of(ApprovalKind.BASH, "git push *", "d"))));
+        assertEquals(1, store.load().ask().size());
+        assertEquals("git push *", store.load().ask().get(0).match());
+    }
 }

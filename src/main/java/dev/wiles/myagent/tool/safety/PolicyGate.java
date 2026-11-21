@@ -61,10 +61,20 @@ public final class PolicyGate implements ApprovalPolicy {
     }
 
     @Override
+    public boolean requiresHuman(ApprovalRequest request) {
+        reloadIfChanged();
+        return rules.check(request).decision() == ApprovalRules.Decision.ALWAYS_ASK;
+    }
+
+    @Override
     public ApprovalVerdict decideIgnoringAllowRules(ApprovalRequest request) {
         ApprovalVerdict denied = denyOnly(request);
         if (denied != null) {
             return denied;
+        }
+        if (requiresHuman(request)) {
+            ApprovalVerdict verdict = ApprovalScope.requiringHuman(() -> ask.decide(request));
+            return verdict.approved() ? ApprovalVerdict.yes() : verdict;
         }
         // 「以后都同意」在这儿不存规则：存下来的是一条命令规则，下次会连「出沙箱」一起放行
         ApprovalVerdict verdict = ask.decide(request);
@@ -89,6 +99,11 @@ public final class PolicyGate implements ApprovalPolicy {
             case ALLOW -> {
                 log.debug("规则 {} 放行 {}", outcome.rule().display(), request.subject());
                 return ApprovalVerdict.yes();
+            }
+            case ALWAYS_ASK -> {
+                // ask 规则：一定问人（照 Claude Code）。不存「以后都同意」——ask 压过 allow，存了也没用
+                ApprovalVerdict verdict = ApprovalScope.requiringHuman(() -> ask.decide(request));
+                return verdict.approved() ? ApprovalVerdict.yes() : verdict;
             }
             case ASK -> {
                 ApprovalVerdict verdict = ask.decide(request);

@@ -88,7 +88,8 @@ public final class PolicyStore {
                         file, version, VERSION);
                 return ApprovalRules.empty();
             }
-            return ApprovalRules.of(readRules(root.path("allow")), readRules(root.path("deny")));
+            return ApprovalRules.of(readRules(root.path("allow")), readRules(root.path("deny")),
+                    readRules(root.path("ask")));
         } catch (IOException | RuntimeException e) {
             log.warn("读 {} 失败（{}），这次当作没有规则", file, e.getMessage());
             return ApprovalRules.empty();
@@ -129,6 +130,7 @@ public final class PolicyStore {
         root.put("version", VERSION);
         writeRules(root.putArray("allow"), rules.allow());
         writeRules(root.putArray("deny"), rules.deny());
+        writeRules(root.putArray("ask"), rules.ask());
 
         Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
         try {

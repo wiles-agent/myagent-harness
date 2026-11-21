@@ -106,13 +106,13 @@ public final class BashTool implements Tool {
      *
      * @return 拦下时的错误；放行返回 null
      */
-    private ToolResult approveSandboxed(String command, CommandRisk risk) {
-        if (!risk.needsApproval()) {
+    private ToolResult approveSandboxed(String command, CommandRisk risk, boolean mustAsk) {
+        if (!risk.needsApproval() && !mustAsk) {
             return null;
         }
         ApprovalRequest request = ApprovalRequest.bash(command, risk.reason());
         boolean autoMode = dev.wiles.myagent.tool.safety.ApprovalScope.autoReviewer() != null;
-        ApprovalVerdict verdict = sandbox.settings().autoAllow() && !autoMode
+        ApprovalVerdict verdict = sandbox.settings().autoAllow() && !autoMode && !mustAsk
                 ? approval.denyOnly(request)
                 : approval.decide(request);
         if (verdict == null || verdict.approved()) {
@@ -143,8 +143,10 @@ public final class BashTool implements Tool {
         boolean wantsOut = Args.optBoolean(args, "dangerously_disable_sandbox", false)
                 && sandbox.settings().allowUnsandboxedCommands();
         boolean sandboxed = sandbox.active() && !wantsOut;
+        // ask 规则（照 Claude Code）：撞上就一定问人——守卫判成安全的、沙箱里自动放行的都不例外
+        boolean mustAsk = approval.requiresHuman(ApprovalRequest.bash(command, risk.reason()));
         if (sandboxed) {
-            ToolResult refused = approveSandboxed(command, risk);
+            ToolResult refused = approveSandboxed(command, risk, mustAsk);
             if (refused != null) {
                 return refused;
             }
@@ -158,7 +160,7 @@ public final class BashTool implements Tool {
                 return ToolResult.error(verdict.deniedMessage("用户没批准在沙箱外执行这条命令。"
                         + "在沙箱里换一种做法；确实做不到就说明原因，交给用户。"));
             }
-        } else if (risk.needsApproval()) {
+        } else if (risk.needsApproval() || mustAsk) {
             ApprovalVerdict verdict = approval.decide(ApprovalRequest.bash(command, risk.reason()));
             if (!verdict.approved()) {
                 return ToolResult.error(verdict.deniedMessage(

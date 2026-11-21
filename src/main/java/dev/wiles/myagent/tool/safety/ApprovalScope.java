@@ -65,6 +65,28 @@ public final class ApprovalScope {
         AUTO.remove();
     }
 
+    /** 规则层撞上 ask 规则时设：这一问必须到人，自动审查不接（照 Claude Code）。不跨线程。 */
+    private static final ThreadLocal<Boolean> HUMAN_REQUIRED = new ThreadLocal<>();
+
+    /** 在「必须问人」的标记下跑一次审批。 */
+    public static <T> T requiringHuman(java.util.function.Supplier<T> decision) {
+        Boolean before = HUMAN_REQUIRED.get();
+        HUMAN_REQUIRED.set(Boolean.TRUE);
+        try {
+            return decision.get();
+        } finally {
+            if (before == null) {
+                HUMAN_REQUIRED.remove();
+            } else {
+                HUMAN_REQUIRED.set(before);
+            }
+        }
+    }
+
+    public static boolean humanRequired() {
+        return Boolean.TRUE.equals(HUMAN_REQUIRED.get());
+    }
+
     /** 这条线程上的自动审查；不在 auto 下是 null。 */
     public static AutoReviewer autoReviewer() {
         return AUTO.get();

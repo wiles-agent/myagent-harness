@@ -37,7 +37,8 @@ public final class ApprovalRules {
     public enum Decision {
         /** 有规则罩着，不用问 */ ALLOW,
         /** 撞上黑名单，直接拒，也不用问 */ DENY,
-        /** 算不出来，去问人 */ ASK
+        /** 算不出来，去问人 */ ASK,
+        /** 撞上 ask 规则：一定问人——auto 下不交给审查，沙箱的自动放行也不算数（照 Claude Code） */ ALWAYS_ASK
     }
 
     /**
@@ -50,14 +51,21 @@ public final class ApprovalRules {
 
     private final List<ApprovalRule> allow;
     private final List<ApprovalRule> deny;
+    /** 照 Claude Code 的 permissions.ask：deny > ask > allow。 */
+    private final List<ApprovalRule> ask;
 
-    private ApprovalRules(List<ApprovalRule> allow, List<ApprovalRule> deny) {
+    private ApprovalRules(List<ApprovalRule> allow, List<ApprovalRule> deny, List<ApprovalRule> ask) {
         this.allow = List.copyOf(allow);
         this.deny = List.copyOf(deny);
+        this.ask = List.copyOf(ask);
     }
 
     public static ApprovalRules empty() {
-        return new ApprovalRules(List.of(), List.of());
+        return new ApprovalRules(List.of(), List.of(), List.of());
+    }
+
+    public static ApprovalRules of(List<ApprovalRule> allow, List<ApprovalRule> deny) {
+        return of(allow, deny, List.of());
     }
 
     /**
@@ -65,7 +73,7 @@ public final class ApprovalRules {
      * {@link ApprovalRule#matchesEverything()}。丢的时候记一条 warn，
      * 不然用户会困惑于「我明明写了怎么不生效」。
      */
-    public static ApprovalRules of(List<ApprovalRule> allow, List<ApprovalRule> deny) {
+    public static ApprovalRules of(List<ApprovalRule> allow, List<ApprovalRule> deny, List<ApprovalRule> ask) {
         List<ApprovalRule> kept = new ArrayList<>();
         for (ApprovalRule rule : allow == null ? List.<ApprovalRule>of() : allow) {
             if (rule == null) {
@@ -83,7 +91,9 @@ public final class ApprovalRules {
         }
         List<ApprovalRule> denies = deny == null ? List.<ApprovalRule>of()
                 : deny.stream().filter(java.util.Objects::nonNull).limit(MAX_RULES).toList();
-        return new ApprovalRules(kept, denies);
+        List<ApprovalRule> asks = ask == null ? List.<ApprovalRule>of()
+                : ask.stream().filter(java.util.Objects::nonNull).limit(MAX_RULES).toList();
+        return new ApprovalRules(kept, denies, asks);
     }
 
     public List<ApprovalRule> allow() {
@@ -94,8 +104,12 @@ public final class ApprovalRules {
         return deny;
     }
 
+    public List<ApprovalRule> ask() {
+        return ask;
+    }
+
     public boolean isEmpty() {
-        return allow.isEmpty() && deny.isEmpty();
+        return allow.isEmpty() && deny.isEmpty() && ask.isEmpty();
     }
 
     /** 加几条放行规则，返回新的一份。已经被现有规则罩住的不重复加。 */
@@ -112,7 +126,7 @@ public final class ApprovalRules {
                 merged.add(rule);
             }
         }
-        return of(merged, deny);
+        return of(merged, deny, ask);
     }
 
     /** 要不要问人。 */
@@ -142,7 +156,7 @@ public final class ApprovalRules {
      */
     public ApprovalRules withoutArbitraryCodeAllows() {
         List<ApprovalRule> kept = allow.stream().filter(r -> !grantsArbitraryCode(r)).toList();
-        return kept.size() == allow.size() ? this : new ApprovalRules(kept, deny);
+        return kept.size() == allow.size() ? this : new ApprovalRules(kept, deny, ask);
     }
 
     private static boolean grantsArbitraryCode(ApprovalRule rule) {
@@ -191,6 +205,16 @@ public final class ApprovalRules {
                 return new Outcome(Decision.DENY, hit);
             }
         }
+        // ask 规则：任何一段撞上就一定问人（照 Claude Code：deny > ask > allow）
+        for (String segment : segments) {
+            ApprovalRule hit = firstCovering(ask, ApprovalKind.BASH, segment);
+            if (hit == null) {
+                hit = firstCovering(ask, ApprovalKind.BASH, CommandGuard.unwrapForRules(segment, true));
+            }
+            if (hit != null) {
+                return new Outcome(Decision.ALWAYS_ASK, hit);
+            }
+        }
         // allow 要每一段<b>要审批的</b>都罩得住才算——白名单要乐观但不能有缺口。
         // 命令守卫本来就放行的段（git status、echo、ls）不用规则罩：不然 `git add x && git status`
         // 有 `git add *` 也照样要问。守卫的「要审批」只出自逐段判定，所以跳过的正好是不该问的那些
@@ -217,6 +241,10 @@ public final class ApprovalRules {
         ApprovalRule denied = firstCovering(deny, kind, subject);
         if (denied != null) {
             return new Outcome(Decision.DENY, denied);
+        }
+        ApprovalRule asked = firstCovering(ask, kind, subject);
+        if (asked != null) {
+            return new Outcome(Decision.ALWAYS_ASK, asked);
         }
         ApprovalRule allowed = firstCovering(allow, kind, subject);
         return allowed == null ? Outcome.ASK : new Outcome(Decision.ALLOW, allowed);
