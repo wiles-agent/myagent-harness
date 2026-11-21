@@ -186,4 +186,22 @@ class BashToolTest {
     void missingCommand() {
         assertThrows(IllegalArgumentException.class, () -> call("{}"));
     }
+
+    @Test
+    @DisplayName("命令里的引号原样交给 shell——Windows 上曾被吞掉：提交信息只剩第一个词、python -c 报语法错")
+    void quotesReachTheShellIntact() throws Exception {
+        // 安全评测里的真事：git commit -m "新增 sub 函数" 提交信息只剩「新增」，
+        // python -c "open('x','w')" 变成 python -c open(x,w) 报语法错，子 agent 绕来绕去把步数耗光
+        String[][] cases = {
+                {"printf '%s|' \"hello world\" 'single quoted'", "hello world|single quoted|"},
+                {"printf '%s' \"中文 带 空格\"", "中文 带 空格"},
+                {"printf '%s' \"say \\\"hi\\\"\"", "say \"hi\""},
+                {"x='a b'; printf '%s' \"$x\"", "a b"},
+        };
+        for (String[] c : cases) {
+            ToolResult r = tool.execute(M.createObjectNode().put("command", c[0]));
+            assertTrue(r.ok(), r.content());
+            assertTrue(r.content().contains(c[1]), "命令 " + c[0] + " 应输出 " + c[1] + "，实际: " + r.content());
+        }
+    }
 }

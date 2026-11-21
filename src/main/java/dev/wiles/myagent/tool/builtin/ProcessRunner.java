@@ -24,6 +24,31 @@ final class ProcessRunner {
     private ProcessRunner() {
     }
 
+    private static final boolean WINDOWS =
+            System.getProperty("os.name", "").toLowerCase(java.util.Locale.ROOT).contains("win");
+
+    /**
+     * 用 sh 跑一段命令文本。
+     *
+     * <p>Windows 上不能 {@code sh -c <命令>}：Java 把参数拼成一整条命令行交给 Windows 时，
+     * 不转义参数里的双引号，sh 收到的命令就被吞了引号——{@code git commit -m "新增 sub 函数"}
+     * 提交信息只剩「新增」，{@code python -c "open('x','w')"} 直接语法错。
+     * 所以 Windows 上把命令写进临时脚本、{@code sh <脚本>} 跑：命令文本根本不经过那条命令行。
+     */
+    static Outcome runShell(String command, Path dir, int timeoutSeconds) throws IOException {
+        if (!WINDOWS) {
+            return run(List.of("sh", "-c", command), dir, timeoutSeconds);
+        }
+        Path script = java.nio.file.Files.createTempFile("myagent-cmd-", ".sh");
+        try {
+            java.nio.file.Files.writeString(script, command, java.nio.charset.StandardCharsets.UTF_8);
+            // 正斜杠：Git 的 sh 认 C:/...，不用再操心反斜杠转义
+            return run(List.of("sh", script.toString().replace('\\', '/')), dir, timeoutSeconds);
+        } finally {
+            java.nio.file.Files.deleteIfExists(script);
+        }
+    }
+
     static Outcome run(List<String> argv, Path dir, int timeoutSeconds) throws IOException {
         Process process = new ProcessBuilder(argv)
                 .directory(dir.toFile())

@@ -106,7 +106,7 @@ public final class BashTool implements Tool {
         long startedAt = System.currentTimeMillis();
         ProcessRunner.Outcome out;
         try {
-            out = ProcessRunner.run(java.util.List.of("sh", "-c", command), workspace.root(), timeout);
+            out = ProcessRunner.runShell(command, workspace.root(), timeout);
         } catch (IOException e) {
             return ToolResult.error("无法启动命令: " + e.getMessage());
         }
