@@ -157,6 +157,32 @@ class BashSandboxTest {
     }
 
     @Test
+    @DisplayName("沙箱里的 /tmp 跨命令留着（照 Claude Code 的 per-user temp）：评测里上一条下载到 /tmp 的，下一条就不见了")
+    void sandboxTempPersistsAcrossCommands() {
+        List<Path> scratches = new ArrayList<>();
+        Sandbox recording = new Sandbox() {
+            public String name() {
+                return "rec";
+            }
+
+            public String unavailable() {
+                return null;
+            }
+
+            public List<String> wrap(List<String> argv, Path ws, Path scratch, Endpoint proxy, SandboxSettings s) {
+                scratches.add(scratch);
+                return argv;
+            }
+        };
+        BashTool tool = bash(on(true), recording);
+        run(tool, "echo a", false);
+        run(tool, "echo b", false);
+        assertEquals(2, scratches.size());
+        assertEquals(scratches.get(0), scratches.get(1), "两条命令该是同一个临时目录");
+        assertTrue(java.nio.file.Files.isDirectory(scratches.get(0)), "跑完不删");
+    }
+
+    @Test
     @DisplayName("allowUnsandboxedCommands: false 时忽略 dangerously_disable_sandbox，照样进沙箱")
     void unsandboxedRetryCanBeDisabled() {
         ToolResult r = run(bash(on(false), FAKE), "echo x", true);

@@ -60,8 +60,23 @@ public final class SandboxRunner {
         return settings;
     }
 
+    /**
+     * 沙箱里的 /tmp：一个 runner（一段会话）一个，跨命令留着（照 Claude Code 的 per-user temp）——
+     * 上一条下载到 /tmp 的东西下一条还要用。进程退出时收掉。
+     */
+    private Path scratch;
+
+    private synchronized Path scratch() throws IOException {
+        if (scratch == null || !Files.isDirectory(scratch)) {
+            Path dir = Files.createTempDirectory("myagent-sbx-");
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> deleteTree(dir), "sandbox-tmp-cleanup"));
+            scratch = dir;
+        }
+        return scratch;
+    }
+
     public <T> T run(List<String> argv, Path workspace, Exec<T> exec) throws IOException {
-        Path scratch = Files.createTempDirectory("myagent-sbx-");
+        Path scratch = scratch();
         Path net = Files.createTempDirectory("myagent-net-");
         NetworkProxy.HostDecider decider = host -> approval.decide(
                 ApprovalRequest.network(host, "沙箱里的命令要连 " + host + "（不在放行的域名里）")).approved();
@@ -70,8 +85,7 @@ public final class SandboxRunner {
         try (proxy) {
             return exec.run(sandbox.wrap(argv, workspace, scratch, proxy.endpoint(), settings));
         } finally {
-            deleteTree(scratch);
-            deleteTree(net);
+            deleteTree(net);                    // 代理的 socket 每条命令一个；/tmp 留着
         }
     }
 

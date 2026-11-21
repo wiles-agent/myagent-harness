@@ -581,7 +581,7 @@ WebSocket 服务，握手信息（端口 + 一次性 token）打在 stdout。照
 - **平台**：Linux / WSL2 用 bubblewrap（要装 `bubblewrap` 和 `socat`），macOS 用 Seatbelt（**没在真机上验证过**）。
   **原生 Windows 不支持**（Claude Code 也一样），要用沙箱就在 WSL2 里跑。开了但用不了时照常在沙箱外跑、照常审批；
   设 `failIfUnavailable: true` 则启动就停。
-- **文件**：整机可读；只能写工作区、这次命令的临时目录（沙箱里的 `/tmp`，和外面的不是一个）、`allowWrite` 列的目录。
+- **文件**：整机可读；只能写工作区、这段会话的临时目录（沙箱里的 `/tmp`：和外面的不是一个，跨命令留着，进程退出时收掉）、`allowWrite` 列的目录。
   `.git/hooks`、`.git/config`、`.myagent`、`.claude`、shell 启动文件这些**在工作区里也只读**——改了它们，沙箱外的东西就会执行沙箱里写的代码。
   已知局限：本来不存在的受保护路径没东西可挂只读，沙箱里能把它建出来。
 - **网络**：沙箱里没有直通网络的路（单独的网络命名空间），唯一的出口是外面的代理，按**主机名**判：`deniedDomains` 一律拒，

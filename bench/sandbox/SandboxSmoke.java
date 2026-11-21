@@ -53,6 +53,8 @@ public class SandboxSmoke {
 
         r = run(bash, "python3 -c \"open('/tmp/smoke-marker','w').write('s')\" && cat /tmp/smoke-marker", false);
         check("沙箱里的 /tmp 能写，而且和外面的 /tmp 是两个", r.contains("s") && !Files.exists(Path.of("/tmp/smoke-marker")), r);
+        r = run(bash, "cat /tmp/smoke-marker", false);
+        check("沙箱里的 /tmp 跨命令留着（上一条写的下一条读得到）", r.contains("s") && !r.contains("No such file"), r);
 
         asked.clear();
         r = run(bash, "curl -s -m 5 http://127.0.0.1:8099/ ; echo rc=$?", false);
