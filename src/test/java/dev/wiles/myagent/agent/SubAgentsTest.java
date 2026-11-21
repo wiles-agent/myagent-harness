@@ -450,6 +450,53 @@ class SubAgentsTest {
     }
 
     @Test
+    @DisplayName("模型：调用参数 > 类型定义 > 会话默认；FORCE 压过一切；fork 永远跟主对话、也不许指定；不能换模型的会话照旧用默认")
+    void modelPrecedence() throws Exception {
+        List<String> built = new CopyOnWriteArrayList<>();
+        SubAgents.Settings dflt = new SubAgents.Settings(3, java.util.Set.of(), 0, 0, null, "cheap-default", false);
+        Rig rig = new Rig(SubAgents.Mode.ON, 0, dflt);
+        rig.subagents.withModelClients(m -> {
+            built.add(m);
+            return new Script().reply("ok");
+        }).withDefinitions(AgentDefinitions.of(List.of(
+                new AgentDefinition("scout", "查东西", null, List.of(), "", false, "t", "tiny-model"))));
+
+        AgentDefinition explorer = AgentDefinitions.EXPLORER;
+        AgentDefinition scout = rig.subagents.allowed().stream().filter(d -> d.name().equals("scout")).findFirst().orElseThrow();
+        assertEquals("picked", rig.subagents.modelFor(scout, "picked"));
+        assertEquals("tiny-model", rig.subagents.modelFor(scout, null));
+        assertEquals("cheap-default", rig.subagents.modelFor(explorer, null));
+        assertNull(rig.subagents.modelFor(AgentDefinitions.FORK, null));
+        assertTrue(rig.subagents.spawnDescription().contains("- scout：查东西（模型：tiny-model）"));
+
+        rig.spawn(Map.of("message", "查", "agent_type", "scout"));
+        rig.spawn(Map.of("message", "查", "agent_type", "explorer", "model", "picked"));
+        awaitIdle(rig.subagents);
+        assertEquals(List.of("tiny-model", "picked"), built);
+        var children = rig.subagents.report().path("children");
+        assertEquals("tiny-model", children.get(0).path("model").asText());
+
+        ToolResult forkWithModel = rig.exec("spawn_agent", Map.of("message", "x", "agent_type", "fork", "model", "picked"));
+        assertFalse(forkWithModel.ok());
+        assertTrue(forkWithModel.content().contains("缓存"), forkWithModel.content());
+
+        SubAgents.Settings forced = new SubAgents.Settings(3, java.util.Set.of(), 0, 0, null, "forced", true);
+        Rig f = new Rig(SubAgents.Mode.ON, 0, forced);
+        assertEquals("forced", f.subagents.modelFor(scout, "picked"));
+        assertNull(f.subagents.modelFor(AgentDefinitions.FORK, null));
+
+        Rig plain = new Rig(SubAgents.Mode.ON, 0, dflt, new Script().reply("ok"));   // 没接 withModelClients
+        plain.spawn(Map.of("message", "查", "agent_type", "explorer", "model", "picked"));
+        awaitIdle(plain.subagents);
+        assertTrue(plain.subagents.report().path("children").get(0).path("model").isMissingNode());
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new SubAgents.Settings(3, java.util.Set.of(), 0, 0, null, null, true));
+        assertEquals("m1", settings(Map.of("MYAGENT_SUBAGENT_MODEL", "m1", "MYAGENT_SUBAGENT_MODEL_FORCE", "1"), 0, null).model());
+        assertTrue(settings(Map.of("MYAGENT_SUBAGENT_MODEL", "m1", "MYAGENT_SUBAGENT_MODEL_FORCE", "1"), 0, null).forceModel());
+    }
+
+    @Test
     @DisplayName("自定义类型：tools 白名单收窄菜单、说明里亮出来；disallowedTools 先生效；要求 owns 的照样要")
     void customDefinitionsShapeTheMenu() throws Exception {
         Script reviewer = new Script().reply("审完了");

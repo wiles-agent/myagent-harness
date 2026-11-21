@@ -56,6 +56,57 @@ public final class Headless {
      * 每次工具调用打一行到 stderr。无头模式没有界面，事后能看的只有这份日志——
      * 「t1 为什么 40 秒撞了 16 步」这种问题，没有它就只能猜。
      */
+    private static void putLedger(ObjectNode summary, TokenLedger ledger, long started) {
+        summary.put("promptTokens", ledger.promptTokens());
+        summary.put("cachedPromptTokens", ledger.cachedPromptTokens());
+        summary.put("completionTokens", ledger.completionTokens());
+        summary.put("requests", ledger.requests());
+        summary.put("durationMs", System.currentTimeMillis() - started);
+    }
+
+    /**
+     * MYAGENT_TRANSCRIPT=<文件>：把整段对话落盘——模型每段回复的原话、调了什么、工具回了什么（截断），
+     * 外加系统提示词和工具菜单。评测里要回答「它为什么不派子 agent」，光有工具调用的 trace 不够：
+     * 得看得见它说了什么、菜单上到底有没有那几个工具。
+     */
+    private static void writeTranscript(Agent agent, ToolRegistry tools) {
+        String path = System.getenv("MYAGENT_TRANSCRIPT");
+        if (path == null || path.isBlank() || agent == null) {
+            return;
+        }
+        ObjectNode out = JSON.createObjectNode();
+        tools.all().forEach(t -> out.withArray("menu").add(t.name()));
+        out.put("systemPrompt", agent.systemPrompt());
+        var messages = out.putArray("messages");
+        for (dev.wiles.myagent.llm.ChatMessage m : agent.conversation()) {
+            ObjectNode n = messages.addObject();
+            n.put("role", m.role());
+            String content = m.content() == null ? "" : m.content();
+            n.put("content", "tool".equals(m.role()) && content.length() > 2000
+                    ? content.substring(0, 2000) + "…（截断，共 " + content.length() + " 字符）" : content);
+            if (m.hasToolCalls()) {
+                for (dev.wiles.myagent.llm.ToolCall c : m.toolCalls()) {
+                    String args = c.argumentsJson() == null ? "" : c.argumentsJson();
+                    n.withArray("toolCalls").addObject().put("name", c.name())
+                            .put("args", args.length() > 1500 ? args.substring(0, 1500) + "…" : args);
+                }
+            }
+        }
+        try {
+            Files.writeString(Path.of(path), out.toPrettyString());
+        } catch (IOException e) {
+            System.err.println("写不了对话记录 " + path + ": " + e.getMessage());
+        }
+    }
+
+    private static void writeSummary(String path, String line) {
+        try {
+            Files.writeString(Path.of(path), line + "\n");
+        } catch (IOException e) {
+            System.err.println("写不了摘要 " + path + ": " + e.getMessage());
+        }
+    }
+
     private static void trace(String stage, AgentEvent event) {
         if (event instanceof AgentEvent.ToolStarted t) {
             String args = t.arguments() == null ? "" : t.arguments().replaceAll("\\s+", " ");
@@ -116,6 +167,33 @@ public final class Headless {
         summary.put("mode", options.onceMode());
         summary.put("model", config.model());
         summary.put("maxSteps", maxSteps);
+        AtomicInteger steps = new AtomicInteger();
+        AtomicReference<SubAgents> live = new AtomicReference<>();
+        AtomicReference<Agent> liveAgent = new AtomicReference<>();
+        java.util.concurrent.atomic.AtomicBoolean written = new java.util.concurrent.atomic.AtomicBoolean();
+        // 评测框架到点会发 SIGTERM（或者包一层 timeout）：被杀时也把截至此刻的账写出来，
+        // 不然跑了四十分钟的那一轮 token、缓存命中、派过的子 agent 全都没有记录
+        if (options.onceOut() != null) {
+            Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+                if (!written.compareAndSet(false, true)) {
+                    return;
+                }
+                ObjectNode partial = JSON.createObjectNode();
+                partial.put("mode", options.onceMode());
+                partial.put("model", config.model());
+                partial.put("maxSteps", maxSteps);
+                partial.put("status", "TERMINATED");
+                partial.put("steps", steps.get());
+                SubAgents sub = live.get();
+                partial.put("subagents", sub == null ? 0 : sub.spawned());
+                if (sub != null) {
+                    partial.set("subagentReport", sub.report());
+                }
+                putLedger(partial, meter.snapshot(), started);
+                writeSummary(options.onceOut(), partial.toString());
+                writeTranscript(liveAgent.get(), tools);
+            }, "once-summary-on-exit"));
+        }
         int exit;
         String text;
         try {
@@ -140,6 +218,7 @@ public final class Headless {
                             });
             if (subagents != null) {
                 tools.registerAll(subagents.tools());
+                subagents.withModelClients(model -> meter.meter(new DeepSeekClient(config.withModel(model))));
             }
             // 和界面那条路径一样：MCP 工具平时只露名字，用到时 tool_search 拉完整说明。
             // 没接 MCP 时这里什么都不做，菜单和以前一字不差
@@ -156,13 +235,14 @@ public final class Headless {
                     maxSteps, new ContextManager(config.contextTokens()))
                     .withWritingTools(BuiltinTools.WRITING_TOOLS)
                     .withStepBudget(budget);
+            liveAgent.set(agent);
             if (budget != null) {
                 summary.put("totalStepBudget", budget.total());
             }
             if (subagents != null) {
                 subagents.attach(agent);
+                live.set(subagents);
             }
-            AtomicInteger steps = new AtomicInteger();
             AtomicReference<String> failed = new AtomicReference<>();
             agent.onEvent(event -> {
                 if (event instanceof AgentEvent.Thinking) {
@@ -228,20 +308,15 @@ public final class Headless {
         } finally {
             mcp.close();     // MCP server 是子进程，不关就是孤儿
         }
-        TokenLedger ledger = meter.snapshot();
-        summary.put("promptTokens", ledger.promptTokens());
-        summary.put("completionTokens", ledger.completionTokens());
-        summary.put("requests", ledger.requests());
-        summary.put("durationMs", System.currentTimeMillis() - started);
+        putLedger(summary, meter.snapshot(), started);
 
         System.out.println(text);
         System.out.flush();
         String line = summary.toString();
         if (options.onceOut() != null) {
-            try {
-                Files.writeString(Path.of(options.onceOut()), line + "\n");
-            } catch (IOException e) {
-                System.err.println("写不了摘要 " + options.onceOut() + ": " + e.getMessage());
+            if (written.compareAndSet(false, true)) {        // 退出钩子已经写过（正在被杀）就不再覆盖
+                writeSummary(options.onceOut(), line);
+                writeTranscript(liveAgent.get(), tools);
             }
         } else {
             System.err.println(line);

@@ -32,12 +32,18 @@ import dev.wiles.myagent.llm.ChatResponse;
  * @param requests         发了多少次请求（含压缩用的那些）
  * @param missingUsage     有多少次响应没带 usage——这个数不为 0 时，
  *                         上面几项就是<b>低报</b>的，界面该说明白，不能装作精确
+ * @param cachedPromptTokens 提示词里命中服务端前缀缓存的部分（{@code promptTokens} 的子集）。
+ *                         命中的那部分按缓存价计费，子 agent 共不共用主 agent 的系统提示词，差别就在这个数上
  */
 @JsonIgnoreProperties(ignoreUnknown = true)
 public record TokenLedger(long promptTokens, long completionTokens,
-                          int requests, int missingUsage) {
+                          int requests, int missingUsage, long cachedPromptTokens) {
 
-    public static final TokenLedger EMPTY = new TokenLedger(0, 0, 0, 0);
+    public static final TokenLedger EMPTY = new TokenLedger(0, 0, 0, 0, 0);
+
+    public TokenLedger(long promptTokens, long completionTokens, int requests, int missingUsage) {
+        this(promptTokens, completionTokens, requests, missingUsage, 0);
+    }
 
     /**
      * 记一次响应。
@@ -52,12 +58,13 @@ public record TokenLedger(long promptTokens, long completionTokens,
         ChatResponse.Usage usage = response.usage();
         if (usage == null) {
             return new TokenLedger(promptTokens, completionTokens,
-                    requests + 1, missingUsage + 1);
+                    requests + 1, missingUsage + 1, cachedPromptTokens);
         }
         return new TokenLedger(
                 promptTokens + Math.max(0, usage.promptTokens()),
                 completionTokens + Math.max(0, usage.completionTokens()),
-                requests + 1, missingUsage);
+                requests + 1, missingUsage,
+                cachedPromptTokens + Math.max(0, usage.cachedPromptTokens()));
     }
 
     /** 续聊时把存档里的账接上。 */
@@ -67,7 +74,8 @@ public record TokenLedger(long promptTokens, long completionTokens,
         }
         return new TokenLedger(promptTokens + other.promptTokens,
                 completionTokens + other.completionTokens,
-                requests + other.requests, missingUsage + other.missingUsage);
+                requests + other.requests, missingUsage + other.missingUsage,
+                cachedPromptTokens + other.cachedPromptTokens);
     }
 
     @JsonIgnore

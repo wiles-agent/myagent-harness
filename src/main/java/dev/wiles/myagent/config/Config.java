@@ -33,6 +33,12 @@ public record Config(String apiKey, String baseUrl, String model, int contextTok
     /** 检查点默认保留 30 天，和 Claude Code 的 cleanupPeriodDays 一个数。 */
     public static final int DEFAULT_SNAPSHOT_DAYS = 30;
 
+    /** 同一个服务、同一把 key，换个模型。子 agent 按类型选模型时用（同一个网关上的便宜模型）。 */
+    public Config withModel(String other) {
+        return other == null || other.isBlank() ? this
+                : new Config(apiKey, baseUrl, other.strip(), contextTokens, thinking, snapshotDays);
+    }
+
     /** 老签名：不碰思考开关。 */
     public Config(String apiKey, String baseUrl, String model, int contextTokens) {
         this(apiKey, baseUrl, model, contextTokens, null, DEFAULT_SNAPSHOT_DAYS);

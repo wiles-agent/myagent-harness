@@ -317,6 +317,8 @@ myagent 一步都不插手。`--isolated` 每次开临时 profile，进程一死
 | `MYAGENT_SUBAGENT_STEPS` | 同主 agent | 子 agent 每一轮的步数上限 |
 | `MYAGENT_SUBAGENT_TIMEOUT` | `1800` | 子 agent 每一轮的时限（秒），超时按出错交回 |
 | `MYAGENT_TOTAL_STEPS` | 不设 | 主 agent 和子 agent 共用的步数预算（算力对齐的对照用） |
+| `MYAGENT_SUBAGENT_MODEL` | 不设 | 子 agent 的默认模型（同一个服务、同一把 key）；不设就跟主对话一样 |
+| `MYAGENT_SUBAGENT_MODEL_FORCE` | 不设 | 设成 `1`：所有子 agent 都用上面那个模型，压过调用参数和类型定义（fork 除外） |
 
 #### 自定义类型
 
@@ -340,6 +342,11 @@ disallowedTools: bash
   通配只许写在 `mcp__` 开头的名字末尾（`mcp__chrome__*`）；`Read`、`Grep`、`Bash(git diff *)` 这类
   Claude Code 写法会翻成我们的工具名，`.claude/agents/` 下现成的定义直接能用。
 - `owns: required`：派它必须写 `owns`（和内置 worker 一样）。覆盖内置 worker 时要自己写上。
+- `model: <模型名>`：这种子 agent 用的模型，`inherit` 或不写就跟主对话一样。照 Claude Code，这是子 agent 控制成本的那条路：
+  查文件、跑测试这类量大但简单的活交给同一个服务上更便宜的模型。实际用哪个模型按这个顺序定：
+  派的时候 `spawn_agent` 传的 `model` → 类型定义的 `model` → `MYAGENT_SUBAGENT_MODEL`；
+  设了 `MYAGENT_SUBAGENT_MODEL_FORCE=1` 就一律用后者。**fork 永远跟主对话同一个模型**（换了模型就和主对话共用不了缓存），
+  给 fork 指定模型会被拒绝。子 agent 的 token 照常记进总账，评测摘要里每个子 agent 记着它用的模型。
 - 坏定义只作废它自己（没写 description、名字不是小写字母数字 `-` `_`、通配写错），日志里有一行 warn；
   `tools` 里对不上任何工具的名字也会 warn——写错名字的症状是「它就是不用那个工具」。
 - 无头运行（`--once`）只用内置三种，评测结果不受本机定义的影响。

@@ -64,11 +64,7 @@ final class StreamAccumulator {
         // choices 是空数组，按老逻辑会被直接 return 掉，token 数就永远拿不到。
         // 中间的 chunk 上这个字段是 null，hasNonNull 正好把它们滤掉。
         if (chunk.hasNonNull("usage")) {
-            JsonNode u = chunk.get("usage");
-            usage = new ChatResponse.Usage(
-                    u.path("prompt_tokens").asInt(),
-                    u.path("completion_tokens").asInt(),
-                    u.path("total_tokens").asInt());
+            usage = ChatResponse.Usage.of(chunk.get("usage"));
         }
         JsonNode choices = chunk.get("choices");
         if (choices == null || !choices.isArray() || choices.isEmpty()) {

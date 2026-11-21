@@ -90,13 +90,28 @@ public final class SubAgents implements Mailbox {
      * @param budget             和主 agent 共用的步数预算，null 表示不共用
      */
     public record Settings(int maxThreads, Set<String> roles, int childMaxSteps, long childTimeoutMillis,
-                           StepBudget budget) {
+                           StepBudget budget, String model, boolean forceModel) {
+
+        /**
+         * 不指定模型：子 agent 跟主对话一样。
+         *
+         * <p>{@code model} / {@code forceModel} 照 Claude Code 的 {@code CLAUDE_CODE_SUBAGENT_MODEL}
+         * 和 {@code ..._FORCE}：前者是排在「调用参数、类型定义」后面的默认值，后者让它压过一切（fork 除外）。
+         */
+        public Settings(int maxThreads, Set<String> roles, int childMaxSteps, long childTimeoutMillis,
+                        StepBudget budget) {
+            this(maxThreads, roles, childMaxSteps, childTimeoutMillis, budget, null, false);
+        }
 
         public Settings {
             if (maxThreads <= 0) {
                 throw new IllegalArgumentException("子 agent 并发上限要大于 0: " + maxThreads);
             }
             roles = Set.copyOf(roles);
+            model = AgentDefinition.normalizeModel(model);
+            if (forceModel && model == null) {
+                throw new IllegalArgumentException("MYAGENT_SUBAGENT_MODEL_FORCE 要和 MYAGENT_SUBAGENT_MODEL 一起设");
+            }
             for (String role : roles) {
                 if (!AgentDefinition.NAME.matcher(role).matches()) {
                     throw new IllegalArgumentException("子 agent 类型名只能用小写字母、数字、- 和 _: " + role);
@@ -111,7 +126,8 @@ public final class SubAgents implements Mailbox {
 
         /**
          * MYAGENT_SUBAGENT_MAX（并发）、MYAGENT_SUBAGENT_ROLES（逗号分隔，如 explorer）、
-         * MYAGENT_SUBAGENT_STEPS（每轮步数，默认同主 agent）、MYAGENT_SUBAGENT_TIMEOUT（每轮秒数）。
+         * MYAGENT_SUBAGENT_STEPS（每轮步数，默认同主 agent）、MYAGENT_SUBAGENT_TIMEOUT（每轮秒数）、
+         * MYAGENT_SUBAGENT_MODEL（子 agent 的默认模型）、MYAGENT_SUBAGENT_MODEL_FORCE=1（所有子 agent 都用它）。
          * 共用预算由调用方传（它也管主 agent）。
          */
         public static Settings fromEnv(java.util.function.Function<String, String> env, int defaultChildSteps,
@@ -123,7 +139,9 @@ public final class SubAgents implements Mailbox {
                             : Set.of(roles.toLowerCase(Locale.ROOT).replace(" ", "").split(",")),
                     intOr(env.apply("MYAGENT_SUBAGENT_STEPS"), defaultChildSteps),
                     intOr(env.apply("MYAGENT_SUBAGENT_TIMEOUT"), (int) (DEFAULT_CHILD_TIMEOUT_MILLIS / 1000)) * 1000L,
-                    budget);
+                    budget, env.apply("MYAGENT_SUBAGENT_MODEL"),
+                    Set.of("1", "true", "yes", "on").contains(String.valueOf(env.apply("MYAGENT_SUBAGENT_MODEL_FORCE"))
+                            .strip().toLowerCase(Locale.ROOT)));
         }
 
         public static int intOr(String value, int fallback) {
@@ -146,6 +164,10 @@ public final class SubAgents implements Mailbox {
             o.put("childTimeoutSeconds", childTimeoutMillis / 1000);
             if (budget != null) {
                 o.put("totalStepBudget", budget.total());
+            }
+            if (model != null) {
+                o.put("model", model);
+                o.put("forceModel", forceModel);
             }
             return o;
         }
@@ -244,6 +266,8 @@ public final class SubAgents implements Mailbox {
         final List<String> queued = new ArrayList<>();
         /** 它负责的文件/目录（绝对、规范化）。它跑着的时候只有它能写；空表示不独占。 */
         final List<Path> owns;
+        /** 它用的模型；null 表示跟主对话一样。 */
+        String model;
 
         // ---- 框架看到的事实（写进通知，不靠它自己说） ----
         /** 写文件工具成功写过的路径。bash 里写的看不到。 */
@@ -297,6 +321,8 @@ public final class SubAgents implements Mailbox {
     private volatile BooleanSupplier readOnly = () -> false;
     /** 会话是只读启动的（{@code --readonly}）：按类型派的子 agent 的系统提示词里也要明说。 */
     private volatile boolean readOnlyPolicy;
+    /** 按模型名造客户端（{@link #withModelClients}）。null 表示这个会话不能换模型，子 agent 都用默认的。 */
+    private volatile java.util.function.Function<String, LlmClient> modelClients;
     /** 能派哪些类型。默认只有内置的，{@link #withDefinitions} 换成带自定义的。 */
     private volatile AgentDefinitions definitions = AgentDefinitions.builtins();
 
@@ -333,6 +359,33 @@ public final class SubAgents implements Mailbox {
     public SubAgents readOnlyWhen(BooleanSupplier readOnly) {
         this.readOnly = readOnly;
         return this;
+    }
+
+    /**
+     * 能按模型名造客户端时接上（同一个服务、同一把 key，换个模型）。接了之后子 agent 才能换模型，
+     * 见 {@link #modelFor}；不接就都用构造时给的默认客户端。
+     */
+    public SubAgents withModelClients(java.util.function.Function<String, LlmClient> modelClients) {
+        this.modelClients = modelClients;
+        return this;
+    }
+
+    /**
+     * 这个子 agent 用哪个模型，null 表示跟主对话一样。照 Claude Code 的顺序：
+     * 派的时候给的 {@code model} → 类型定义里的 {@code model} → {@code MYAGENT_SUBAGENT_MODEL}；
+     * 设了 {@code MYAGENT_SUBAGENT_MODEL_FORCE} 就一律用后者。fork 永远跟主对话一样——它要和主对话共用前缀缓存。
+     */
+    String modelFor(AgentDefinition role, String requested) {
+        if (role == AgentDefinitions.FORK) {
+            return null;
+        }
+        if (settings.forceModel()) {
+            return settings.model();
+        }
+        if (requested != null) {
+            return requested;
+        }
+        return role.model() != null ? role.model() : settings.model();
     }
 
     /** 会话是只读启动的：子 agent 的系统提示词跟主 agent 一样带上只读那段。 */
@@ -438,6 +491,9 @@ public final class SubAgents implements Mailbox {
                 ObjectNode n = list.addObject();
                 n.put("id", c.id);
                 n.put("type", c.role.name());
+                if (c.model != null) {
+                    n.put("model", c.model);
+                }
                 n.put("state", c.state.name().toLowerCase(Locale.ROOT));
                 n.put("steps", c.steps);
                 c.owns.forEach(o -> n.withArray("owns").add(show(o)));
@@ -976,6 +1032,9 @@ public final class SubAgents implements Mailbox {
             if (role.ownsRequired() && role != AgentDefinitions.WORKER) {
                 roles.append("（派它必须写 owns）");
             }
+            if (role.model() != null) {
+                roles.append("（模型：").append(role.model()).append('）');
+            }
             roles.append('\n');
         }
         return REPO.loadRequired("subagents/spawn.md")
@@ -1005,6 +1064,7 @@ public final class SubAgents implements Mailbox {
                       "properties": {
                         "message": {"type": "string", "description": "交给新 agent 的任务。它默认看不到你的对话，要把它需要知道的都写进来"},
                         "agent_type": {"type": "string", "enum": [%s], "description": "不传就是 default"},
+                        "model": {"type": "string", "description": "这次用的模型，不传就按类型定义、再按会话默认（跟你一样）。简单、量大的活（查文件、跑测试、照着样子改）可以换便宜的模型；fork 不能换"},
                         "owns": {"type": "array", "items": {"type": "string"}, "description": "它负责（独占写）的文件或目录，相对工作区。worker 必填。它跑着的时候你和别的 agent 写不了这些路径，它也只能写这些路径；它交回结果后放开"}
                       },
                       "required": ["message"]
@@ -1064,11 +1124,27 @@ public final class SubAgents implements Mailbox {
                     }
                 }
             }
+            String requested;
+            try {
+                requested = AgentDefinition.normalizeModel(args.path("model").asText(null));
+            } catch (IllegalArgumentException e) {
+                return ToolResult.error(e.getMessage());
+            }
+            if (requested != null && role == AgentDefinitions.FORK) {
+                return ToolResult.error("fork 不能换模型：它和你共用前缀缓存，换了模型缓存就全丢了。要换模型就派别的类型");
+            }
+            String model = modelFor(role, requested);
+            java.util.function.Function<String, LlmClient> byModel = modelClients;
+            if (model != null && byModel == null) {
+                log.warn("这个会话不能给子 agent 换模型，{} 照旧用默认模型", model);
+                model = null;
+            }
             String id = "agent-" + SEQ.incrementAndGet();
             boolean fork = role == AgentDefinitions.FORK;
             // fork：系统提示词、工具、历史都和主对话一样，前缀缓存整段命中；
             // 别的类型：自己的系统提示词、筛过的工具、从零开始（照 Claude Code）
-            Agent agent = new Agent(clients.get(), fork ? forkTools(id) : toolsFor(role, id),
+            Agent agent = new Agent(model == null ? clients.get() : byModel.apply(model),
+                    fork ? forkTools(id) : toolsFor(role, id),
                     fork ? parentAgent.systemPrompt() : SystemPrompt.forSubagent(root, role, readOnlyPolicy),
                     settings.childMaxSteps(), contexts.get())
                     .withWritingTools(BuiltinTools.WRITING_TOOLS)
@@ -1078,6 +1154,7 @@ public final class SubAgents implements Mailbox {
                 agent.restore(forked(parentAgent.conversation()));
             }
             Child child = new Child(id, role, agent, owns);
+            child.model = model;
             agent.withMailbox(new ChildInbox(child));
             agent.onEvent(event -> {
                 if (event instanceof AgentEvent.Failed f) {

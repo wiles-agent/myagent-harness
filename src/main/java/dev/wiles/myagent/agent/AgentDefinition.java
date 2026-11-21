@@ -36,9 +36,11 @@ import java.util.regex.Pattern;
  * @param rules           这种 agent 的规矩，拼进它自己的系统提示词（见 {@code SystemPrompt#forSubagent}）
  * @param ownsRequired    派它必须写 {@code owns}（写入归属）。内置的 worker 是
  * @param source          哪来的：{@code builtin} 或文件路径。日志和排查用
+ * @param model           这种子 agent 用的模型；null（或文件里写 {@code inherit}）表示跟主对话一样。
+ *                        照 Claude Code：把简单的活交给同一个服务上更便宜的模型，是子 agent 控制成本的那条路
  */
 public record AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
-                              String rules, boolean ownsRequired, String source) {
+                              String rules, boolean ownsRequired, String source, String model) {
 
     private static final Logger log = LoggerFactory.getLogger(AgentDefinition.class);
 
@@ -67,6 +69,24 @@ public record AgentDefinition(String name, String description, List<String> tool
             checkPattern(name, pattern);
         }
         rules = rules == null ? "" : rules.strip();
+        model = normalizeModel(model);
+    }
+
+    public AgentDefinition(String name, String description, List<String> tools, List<String> disallowedTools,
+                           String rules, boolean ownsRequired, String source) {
+        this(name, description, tools, disallowedTools, rules, ownsRequired, source, null);
+    }
+
+    /** 空、{@code inherit} 都算「跟主对话一样」。模型名只认常见字符——它会原样进请求体。 */
+    static String normalizeModel(String model) {
+        if (model == null || model.isBlank() || model.strip().equalsIgnoreCase("inherit")) {
+            return null;
+        }
+        String m = model.strip();
+        if (!m.matches("[A-Za-z0-9._:/@-]{1,128}")) {
+            throw new IllegalArgumentException("模型名只能用字母、数字和 . _ : / @ -: " + model);
+        }
+        return m;
     }
 
     private static List<String> concat(List<String> a, List<String> b) {
@@ -125,7 +145,7 @@ public record AgentDefinition(String name, String description, List<String> tool
                     toolList(front.getOrDefault("disallowedtools", "")),
                     parsed.body(),
                     "required".equalsIgnoreCase(front.getOrDefault("owns", "").strip()),
-                    file.toString());
+                    file.toString(), front.get("model"));
         } catch (IllegalArgumentException e) {
             log.warn("agent 定义 {} 作废: {}", file, e.getMessage());
             return null;

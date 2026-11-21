@@ -57,6 +57,12 @@ class AgentDefinitionsTest {
                 ---
                 """);
         assertEquals("browser", b.name());
+        assertNull(b.model(), "不写 model 就跟主对话一样");
+        assertEquals("deepseek-v4.1-flash", AgentDefinition.parse(Path.of("m.md"),
+                "---\ndescription: x\nmodel: deepseek-v4.1-flash\n---\n").model());
+        assertNull(AgentDefinition.parse(Path.of("m.md"), "---\ndescription: x\nmodel: inherit\n---\n").model());
+        assertNull(AgentDefinition.parse(Path.of("m.md"), "---\ndescription: x\nmodel: a b; rm\n---\n"),
+                "模型名会原样进请求体，不成形的整份作废");
         assertEquals(List.of("read_file", "mcp__chrome__click", "mcp__chrome__fill"), List.copyOf(b.resolve(TOOLS)));
         assertTrue(b.ownsRequired());
         assertEquals(List.of(), b.unmatched(TOOLS));
