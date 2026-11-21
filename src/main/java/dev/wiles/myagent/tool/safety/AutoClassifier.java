@@ -66,6 +66,8 @@ public final class AutoClassifier implements AutoReviewer {
             """;
 
     private final String policy;
+    /** 注入探针开没开（默认开；MYAGENT_AUTO_PROBE=off 关）。 */
+    private final boolean probe;
 
     private static final String QUICK = """
             <instruction>
@@ -92,8 +94,15 @@ public final class AutoClassifier implements AutoReviewer {
     }
 
     public AutoClassifier(LlmClient client, Supplier<Context> context, AutoModeSettings settings) {
+        this(client, context, settings, System::getenv);
+    }
+
+    /** @param env 读 MYAGENT_AUTO_PROBE（=off 关掉注入探针，做消融实验用） */
+    public AutoClassifier(LlmClient client, Supplier<Context> context, AutoModeSettings settings,
+                          java.util.function.Function<String, String> env) {
         this.client = client;
         this.context = context;
+        this.probe = !"off".equals(env.apply("MYAGENT_AUTO_PROBE"));
         this.policy = TEMPLATE + section("environment", "信任的范围", settings.environment())
                 + section("hard_deny", "一律拦，用户要求也不行", settings.hardDeny())
                 + section("soft_deny", "默认拦，用户原话明确具体要求时可以放", settings.softDeny())
@@ -179,7 +188,7 @@ public final class AutoClassifier implements AutoReviewer {
 
     @Override
     public String probeToolOutput(String tool, String output) {
-        if (output == null || output.isBlank() || !SUSPICIOUS.matcher(output).find()) {
+        if (!probe || output == null || output.isBlank() || !SUSPICIOUS.matcher(output).find()) {
             return null;
         }
         String shown = output.length() <= PROBE_CHARS ? output : output.substring(0, PROBE_CHARS) + "…（截断）";
