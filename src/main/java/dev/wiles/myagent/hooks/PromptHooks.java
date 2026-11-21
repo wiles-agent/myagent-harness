@@ -6,17 +6,12 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.TimeUnit;
 
 /**
  * 用户提交一句话时跑的 hook，照 Claude Code 的 {@code UserPromptSubmit}。
@@ -136,21 +131,21 @@ public final class PromptHooks {
         List<String> context = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
         for (Command command : commands) {
-            Result r = exec(command, stdin);
-            if (r.error != null) {
-                warnings.add("hook「" + command.command() + "」" + r.error);
+            HookRunner.Result r = HookRunner.run(command.command(), command.timeoutSeconds(), workspace, stdin);
+            if (r.error() != null) {
+                warnings.add("hook「" + command.command() + "」" + r.error());
                 continue;
             }
-            if (r.exit == 2) {
-                String reason = r.stderr.isBlank() ? "被 hook「" + command.command() + "」拦下了" : r.stderr.strip();
+            if (r.exit() == 2) {
+                String reason = r.stderr().isBlank() ? "被 hook「" + command.command() + "」拦下了" : r.stderr().strip();
                 return new Outcome(true, reason, List.of(), warnings);
             }
-            if (r.exit != 0) {
-                warnings.add("hook「" + command.command() + "」退出码 " + r.exit
-                        + (r.stderr.isBlank() ? "" : ": " + r.stderr.strip()));
+            if (r.exit() != 0) {
+                warnings.add("hook「" + command.command() + "」退出码 " + r.exit()
+                        + (r.stderr().isBlank() ? "" : ": " + r.stderr().strip()));
                 continue;
             }
-            String stdout = r.stdout.strip();
+            String stdout = r.stdout().strip();
             if (stdout.startsWith("{")) {
                 try {
                     JsonNode out = JSON.readTree(stdout);
@@ -173,73 +168,5 @@ public final class PromptHooks {
             }
         }
         return new Outcome(false, "", context, warnings);
-    }
-
-    private record Result(int exit, String stdout, String stderr, String error) {
-    }
-
-    /**
-     * 命令先写进一个临时脚本再交给 sh，而不是 {@code sh -c 命令}：Windows 上 Java 拼命令行时
-     * 不转义参数里的双引号，{@code echo '{"decision":"block"}'} 这种 hook 一传过去就断了。
-     */
-    private Result exec(Command command, byte[] stdin) {
-        Path script;
-        try {
-            script = Files.createTempFile("myagent-hook-", ".sh");
-            Files.writeString(script, command.command() + "\n", StandardCharsets.UTF_8);
-        } catch (IOException e) {
-            return new Result(-1, "", "", "写不了临时脚本: " + e.getMessage());
-        }
-        try {
-            return exec(command, script, stdin);
-        } finally {
-            try {
-                Files.deleteIfExists(script);
-            } catch (IOException e) {
-                script.toFile().deleteOnExit();
-            }
-        }
-    }
-
-    private Result exec(Command command, Path script, byte[] stdin) {
-        Process process;
-        try {
-            process = new ProcessBuilder("sh", script.toAbsolutePath().toString())
-                    .directory(workspace.toFile()).start();
-        } catch (IOException e) {
-            return new Result(-1, "", "", "起不来: " + e.getMessage());
-        }
-        CompletableFuture<String> out = drain(process.getInputStream());
-        CompletableFuture<String> err = drain(process.getErrorStream());
-        try (OutputStream in = process.getOutputStream()) {
-            in.write(stdin);
-        } catch (IOException e) {
-            // 命令不读 stdin 就先关了管道，这不算错
-        }
-        try {
-            if (!process.waitFor(command.timeoutSeconds(), TimeUnit.SECONDS)) {
-                process.destroyForcibly();
-                return new Result(-1, "", "", "超时（" + command.timeoutSeconds() + " 秒），没等它");
-            }
-            return new Result(process.exitValue(), out.get(5, TimeUnit.SECONDS), err.get(5, TimeUnit.SECONDS), null);
-        } catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-            process.destroyForcibly();
-            return new Result(-1, "", "", "被中断");
-        } catch (Exception e) {
-            return new Result(-1, "", "", "读输出失败: " + e.getMessage());
-        }
-    }
-
-    private static CompletableFuture<String> drain(InputStream stream) {
-        return CompletableFuture.supplyAsync(() -> {
-            try (stream) {
-                ByteArrayOutputStream buf = new ByteArrayOutputStream();
-                stream.transferTo(buf);
-                return buf.toString(StandardCharsets.UTF_8);
-            } catch (IOException e) {
-                return "";
-            }
-        });
     }
 }
