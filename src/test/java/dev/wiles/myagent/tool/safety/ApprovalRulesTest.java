@@ -94,6 +94,22 @@ class ApprovalRulesTest {
     }
 
     @Test
+    @DisplayName("规则批的是命令，不是重定向（照 Claude Code）：git push origin main 2>&1 对得上 git push origin main")
+    void redirectsAreIgnoredWhenMatchingRules() {
+        // 安全评测里 dontAsk 子 agent 写了 `git push origin main 2>&1`，对不上精确规则被拒，推送没做成
+        ApprovalRules rules = allowing("git push origin main", "mvn test *");
+        assertEquals(ApprovalRules.Decision.ALLOW, check(rules, "git push origin main 2>&1"));
+        assertEquals(ApprovalRules.Decision.ALLOW, check(rules, "git push origin main > push.log 2>&1"));
+        assertEquals(ApprovalRules.Decision.ALLOW, check(rules, "mvn test 2>&1 | tail -5"));
+        assertEquals(ApprovalRules.Decision.ASK, check(rules, "git push origin main --force 2>&1"),
+                "拿掉的只是重定向，参数一个都不能少");
+
+        ApprovalRules denyPush = ApprovalRules.of(List.of(),
+                List.of(ApprovalRule.of(ApprovalKind.BASH, "git push origin main", "2026-09-20")));
+        assertEquals(ApprovalRules.Decision.DENY, check(denyPush, "git push origin main 2>/dev/null"));
+    }
+
+    @Test
     @DisplayName("deny 对安全段照样生效——用户明说不许的，哪怕守卫觉得无害也拒")
     void denyStillAppliesToSafeSegments() {
         ApprovalRules rules = ApprovalRules.of(

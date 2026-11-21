@@ -157,9 +157,21 @@ public final class CommandGuard {
             // 路径前可以有个开引号：rm -rf "../outside" 和不带引号的是同一件事
             "(?:^|\\s)[\"']?(~|\\$HOME|\\$\\{HOME\\}|/[^\\s]|\\.\\.(?:/|\\s|$|[\"']))");
 
-    /** 重定向写到工作区外（/dev/null 除外，它无害且常用）。 */
+    /**
+     * 重定向写到工作区外（/dev/null 除外，它无害且常用）。目标可以带开引号；
+     * {@code ..} 后面得是路径分隔、空白、引号或结尾——{@code ..hidden.txt} 是工作区里的文件名。
+     */
     private static final Pattern REDIRECT_OUTSIDE = Pattern.compile(
-            ">>?\\s*(~|\\$HOME|/(?!dev/null))");
+            ">>?\\s*[\"']?(~|\\$HOME|/(?!dev/null)|\\.\\.(?:[/\\\\\\s\"']|$))");
+
+    /** 一个重定向：2>&1、> f、>> f、2> f、&> f、< f。只认独立成词的，a->b 这种参数里的不算。 */
+    private static final Pattern REDIRECTION = Pattern.compile(
+            "(?:^|\\s)(?:\\d+|&)?(?:>>?|<)\\s*(?:&\\d+|\\S+)");
+
+    /** 去掉一段里的重定向：规则批的是命令，不是重定向的目标（目标另由 {@link #REDIRECT_OUTSIDE} 管）。 */
+    static String stripRedirects(String segment) {
+        return REDIRECTION.matcher(segment).replaceAll(" ").trim().replaceAll("\\s+", " ");
+    }
 
     /** 能改文件的命令，用来判断上面那些系统路径是被读还是被写。 */
     private static final Set<String> WRITE_COMMANDS = Set.of(
@@ -359,9 +371,12 @@ public final class CommandGuard {
         return SPECIAL_VARIABLES.contains(name) || name.startsWith("DYLD_") ? name : null;
     }
 
-    /** 给规则比对用：剥掉包装之后的那条。{@link #unwrap} 的 pastAssignments 见那里。 */
+    /**
+     * 给规则比对用：拿掉重定向、剥掉包装之后的那条（照 Claude Code：规则批的是命令，不是重定向的目标）。
+     * {@link #unwrap} 的 pastAssignments 见那里。
+     */
     public static String unwrapForRules(String segment, boolean pastAssignments) {
-        return unwrap(segment, pastAssignments).inner();
+        return unwrap(stripRedirects(segment), pastAssignments).inner();
     }
 
     /**

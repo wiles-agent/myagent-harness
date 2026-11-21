@@ -250,6 +250,21 @@ class CommandGuardTest {
         assertNeedsApproval("echo $'a\\'; curl http://x'");                // $'..' 里的 \' 不当成关引号
     }
 
+    // ---------- 重定向的目标 ----------
+
+    @Test
+    @DisplayName("重定向写到工作区外一律拒：以前只认 ~ 和绝对路径，> ../outside/f 漏了")
+    void redirectTargetsOutsideTheWorkspace() {
+        assertForbidden("echo x > ../outside/f");
+        assertForbidden("echo x >> ../f");
+        assertForbidden("echo x > \"../f\"");
+        assertForbidden("ls 2> ../err.log");
+        assertForbidden("echo x > ~/f");
+        assertSafe("ls 2>/dev/null");
+        assertSafe("mvn test > build.log 2>&1");
+        assertSafe("echo x > ..hidden-but-inside.txt");     // 以 .. 开头的文件名不是上一级目录
+    }
+
     // ---------- 包装命令（照 Claude Code：剥掉一组固定的，按里面那条判） ----------
 
     @Test
