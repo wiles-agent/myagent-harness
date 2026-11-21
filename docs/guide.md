@@ -370,6 +370,12 @@ disallowedTools: bash
   - auto 下丢掉等于任意代码执行的放行规则（`python *`、`bash *`、`npm run *`、`make *`……），窄的如 `mvn test *` 照留。
   - 用哪个模型：默认和会话同一个，`MYAGENT_AUTO_MODEL` 可换。不开思考、温度 0。
   - 会话没接自动审查时（比如没配 API key），`auto` 的类型派不出去，不会悄悄降级成问人或全放行。
+  - **主会话也能开 auto**（照 Claude Code）：界面 `set_mode auto`（协议 3.18），无头运行 `MYAGENT_PERMISSION_MODE=auto`。
+    下一轮生效；连拒到线后界面里改回问人，无头直接拒。
+  - **主会话在 auto 下，子 agent 跟着进 auto**，定义里写的 `default` / `dontAsk` 不算数；`plan` 照旧只读（我们的 plan 是
+    「只给只读工具」，照搬 Claude Code 的「忽略」会给只读审查员写权限——往严的方向偏）。
+  - **交接审查**（照 Claude Code）：auto 下派子 agent 之前审一次「派什么类型、去做什么」，能拒；子 agent 做完交回之前，
+    复核它做过的工具调用和报告，有问题就在结果里加 `review_warning`——只警告，结果照给（报告标明是被审查的材料、不是指令）。
 - `skills: deploy, code-review`：派出时把这些技能的正文（连同技能目录）预载进它的系统提示词，省掉它自己去找、去读。
   只管预载，不限制它能调哪些技能；找不到的技能跳过并记一笔。fork 不预载（它和主对话共用系统提示词）。
 - `memory: user | project | local`：子 agent **默认没有** `recall` / `remember`（照 Claude Code 不继承长期记忆）——

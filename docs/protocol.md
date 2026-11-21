@@ -455,7 +455,7 @@ relay 要过一趟公网，同一屋檐下反而绕远。两种模式**同时可
 
 | `t` | 方向 | 字段 | 说明 |
 |---|---|---|---|
-| `set_mode` | 界面 → 服务端 | `mode`（`normal` / `plan`） | Shift+Tab。忙的时候也能切，正在跑的那一轮下一步请求时菜单就换了 |
+| `set_mode` | 界面 → 服务端 | `mode`（`normal` / `plan` / `auto`） | Shift+Tab。忙的时候也能切，正在跑的那一轮下一步请求时菜单就换了 |
 | `mode` | 服务端 → 界面 | `mode` | 模式变了，广播；和眼下一样时只回给发命令的那个，让它的显示对上 |
 | `plan_confirm_request` | 服务端 → 界面 | `id` `kind` `plan?` | 等用户拍板，必须回 `plan_confirm_reply`，900 秒不回按否决 |
 | `plan_confirm_reply` | 界面 → 服务端 | `id` `approved` `feedback?` | 否决时可以附一句话，原话交还给模型 |
@@ -886,6 +886,19 @@ DAG 计划撤了之后，名册只剩这一个用处，界面靠它给带 `task`
 **没宣告 `images` 的后端会把这个字段整个忽略**：模型只看到占位符，收不到图，而且不会报错。
 所以界面只在后端宣告了 `images` 时才放行带图的提交。
 
+### 3.18 auto 模式（feature: `permission_auto`）
+
+照 Claude Code 的 auto 模式：**要问人的操作交给自动审查按用户的意图判，不弹框**。界面发
+`{"t":"set_mode","mode":"auto"}` 切进去，后端回 `{"t":"mode","mode":"auto"}` 并广播；`normal` 切回来。
+
+- **下一轮生效**：审查挂在跑那一轮的线程上，一轮中途切模式，这一轮照旧按开始时的来。
+- **plan 压过 auto**：模型提议进 plan、用户同意之后，`mode` 是 `plan`；plan 本来就只读，比 auto 严。
+- **审查看得见什么**：用户的原话（`prompt` 的 `text`）和 agent 做过的工具调用；看不见助手的话和工具输出。
+- **交还给人**：连拒 3 次或累计 20 次，之后要授权的操作照常发 `approval_request` 问人。
+- **子 agent**：主会话在 auto 下，派出前审一次任务（能拒）；子 agent 跟着进 auto；做完交回前复核，
+  有问题时 `wait_agent` / 通知里的结果多一个 `review_warning`（只警告，结果照给）。
+- feature 名不叫 `auto_mode`：那是早就撤掉的「按字面自动转规划」（见 3.8），老界面认它会去等 `mode_switched`。
+
 ---
 
 ## 4. 界面 → 服务端
@@ -893,7 +906,7 @@ DAG 计划撤了之后，名册只剩这一个用处，界面靠它给带 `task`
 | `t` | 字段 | 说明 |
 |---|---|---|
 | `prompt` | `text` `cid?` `images?` | 普通一轮对话。`cid` 见 3.16，`images` 见 3.17 |
-| `set_mode` | `mode`: `normal` \| `plan` | 切会话模式（feature: `plan_mode`），见 3.4。只读启动时回 `error` |
+| `set_mode` | `mode`: `normal` \| `plan` \| `auto` | 切会话模式（feature: `plan_mode`；`auto` 见 3.18，feature: `permission_auto`），见 3.4。只读启动时切 `plan` 回 `error` |
 | `plan_confirm_reply` | `id` `approved`(bool) `feedback?` | 回应 `plan_confirm_request`。否决时附的话原样交给模型，见 3.4 |
 | `approval_reply` | `id` `decision`: `yes` \| `no` \| `always`，`rules[]`（可选），`feedback`（可选） | 回应 `approval_request`。见 3.3 |
 | `cancel` | — | 中断当前这一轮 |

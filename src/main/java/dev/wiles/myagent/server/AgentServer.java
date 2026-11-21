@@ -143,6 +143,9 @@ public final class AgentServer extends WebSocketServer {
      */
     private final List<String> humanMessages = new java.util.concurrent.CopyOnWriteArrayList<>();
 
+    /** 主会话的 auto 模式（照 Claude Code），见 {@link AutoMode}。 */
+    private final AutoMode autoMode = new AutoMode(this::newMainReviewer);
+
     /** 自动审查用的模型：默认和会话同一个，MYAGENT_AUTO_MODEL 可换；不开思考、温度 0——要的是稳。 */
     private LlmClient autoReviewClient() {
         String model = System.getenv("MYAGENT_AUTO_MODEL");
@@ -390,7 +393,7 @@ public final class AgentServer extends WebSocketServer {
         // 模式变了（不管是界面切的还是模型提议、用户同意的）就告诉所有界面
         planMode.onChange(on -> {
             audit.note("plan_mode", "on", String.valueOf(on));
-            publish(Protocol.event("mode").put("mode", on ? "plan" : "normal"));
+            publish(Protocol.event("mode").put("mode", modeName()));
         });
     }
 
@@ -703,7 +706,7 @@ public final class AgentServer extends WebSocketServer {
         }
         // 先播「用户说了这句话」，再播 busy——顺序就是屏幕上该出现的顺序。
         // 少了这一条，另一块屏上会凭空冒出一段回答（协议 3.15）
-        publish(Protocol.encodeUserMessage(text, planMode.on() ? "plan" : "normal", cid));
+        publish(Protocol.encodeUserMessage(text, modeName(), cid));
         humanMessages.add(text);            // 自动审查只认人说过的话，见 AutoClassifier
         publish(Protocol.event("busy").put("busy", true));
         nameSession(text);
@@ -713,6 +716,7 @@ public final class AgentServer extends WebSocketServer {
         // 要么模型自己调 enter_plan_mode 提议、用户同意。这里只把此刻的模式如实交代给模型
         worker.submit(() -> {
             long startedAt = System.currentTimeMillis();
+            autoMode.enterTurn();                // auto 下这一轮要问人的操作交给自动审查
             try {
                 String input = prepare(text);
                 if (input == null) {
@@ -811,18 +815,36 @@ public final class AgentServer extends WebSocketServer {
      * 和 Claude Code 一样。只读启动时没有「切出 plan 模式能动手」这回事，拒掉。
      */
     private void handleSetMode(Peer peer, String mode) {
-        boolean plan = "plan".equals(mode);
-        if (!plan && !"normal".equals(mode)) {
-            peer.send(error("mode 只认 normal / plan，收到: " + mode));
+        if (!java.util.Set.of("normal", "plan", "auto").contains(mode)) {
+            peer.send(error("mode 只认 normal / plan / auto，收到: " + mode));
             return;
         }
-        if (options.readOnly()) {
+        if ("plan".equals(mode) && options.readOnly()) {
             peer.send(error("只读启动，没有 plan 模式可切"));
             return;
         }
-        planMode.set(plan);
+        // auto（照 Claude Code）：要问人的操作交给自动审查按用户的意图判。下一轮生效，见 AutoMode
+        boolean wasAuto = autoMode.on();
+        autoMode.set("auto".equals(mode));
+        if (wasAuto != autoMode.on()) {
+            audit.note("auto_mode", "on", String.valueOf(autoMode.on()));
+        }
+        planMode.set("plan".equals(mode));
         // 和眼下一样时 set 不会广播，这里补一条回执给发命令的那个，让它的显示对上
-        peer.send(Protocol.event("mode").put("mode", planMode.on() ? "plan" : "normal"));
+        peer.send(Protocol.event("mode").put("mode", modeName()));
+    }
+
+    /** 会话眼下的模式：plan 压过 auto（plan 只读，比 auto 严）。 */
+    private String modeName() {
+        return planMode.on() ? "plan" : autoMode.on() ? "auto" : "normal";
+    }
+
+    /** 主会话的自动审查：只认人说过的原话，看得见主 agent 做过的工具调用（没有结果）。 */
+    private dev.wiles.myagent.tool.safety.AutoReviewer newMainReviewer() {
+        return new dev.wiles.myagent.tool.safety.AutoClassifier(autoReviewClient(),
+                () -> new dev.wiles.myagent.tool.safety.AutoClassifier.Context(List.copyOf(humanMessages), null,
+                        agent == null ? List.of()
+                                : dev.wiles.myagent.tool.safety.AutoClassifier.toolCallsOf(agent.conversation())));
     }
 
     /**
@@ -1194,6 +1216,7 @@ public final class AgentServer extends WebSocketServer {
             agent.reset();
         }
         humanMessages.clear();
+        autoMode.reset();
         // 存档留着，不删：清空的意思是「眼前这段我不要了」，不是「这段从来没发生过」。
         // 想找回来还能从 sessions 列表里挑出来。和终端的 /clear 是同一条语义——
         // 两边不一致的话，同一个存档在两个界面里表现不同，那种 bug 没人查得动
@@ -1329,7 +1352,7 @@ public final class AgentServer extends WebSocketServer {
         n.put("branch", GitBranch.of(workspace.root()));
         n.put("planMode", options.readOnly());   // 线上字段名保持不变，前端认的是这个
         // 会话眼下的模式（plan 模式是权限模式，见 PlanMode）。和上面那个只读启动不是一回事
-        n.put("mode", planMode.on() ? "plan" : "normal");
+        n.put("mode", modeName());
         // 用户能用 /名字 点的技能，界面拿去补全斜杠菜单
         ArrayNode skillList = n.putArray("skills");
         for (Skill skill : skills.userInvocable()) {

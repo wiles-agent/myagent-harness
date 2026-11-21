@@ -289,6 +289,16 @@ public final class Headless {
                 }
                 trace("agent", event);
             });
+            // MYAGENT_PERMISSION_MODE=auto（照 claude -p --permission-mode auto）：主会话要问人的操作交给自动审查。
+            // 无头没人可问，审查交还给人时直接拒（见 AutoReviewGate）；子 agent 跟着进 auto
+            if ("auto".equals(System.getenv("MYAGENT_PERMISSION_MODE"))) {
+                dev.wiles.myagent.tool.safety.ApprovalScope.set(null, false,
+                        new dev.wiles.myagent.tool.safety.AutoClassifier(
+                                meter.meter(new DeepSeekClient(autoReviewConfig(config)).temperature(0)),
+                                () -> new dev.wiles.myagent.tool.safety.AutoClassifier.Context(java.util.List.of(prompt),
+                                        null, dev.wiles.myagent.tool.safety.AutoClassifier.toolCallsOf(agent.conversation()))));
+                summary.put("permissionMode", "auto");
+            }
             if ("react+review".equals(options.onceMode())) {
                 AtomicInteger reviewSteps = new AtomicInteger();
                 ReviewLoop loop = new ReviewLoop(clients, tools, workspace.root(), (stage, event) -> {

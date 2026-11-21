@@ -176,6 +176,8 @@ class ProtocolTest {
         assertTrue(Protocol.FEATURES.contains("roles"), Protocol.FEATURES.toString());
         assertTrue(Protocol.FEATURES.contains("events_resume"), Protocol.FEATURES.toString());
         assertTrue(Protocol.FEATURES.contains("images"), "不宣告的话，新界面会以为后端收不了图、一律拦下");
+        // 不叫 auto_mode：那是早就撤掉的「按字面自动转规划」，老界面认它会去等 mode_switched
+        assertTrue(Protocol.FEATURES.contains("permission_auto"), "不宣告的话，界面不知道能切 auto（set_mode auto）");
         for (String gone : List.of("plan", "replan", "resume", "resume_plan", "auto_mode", "team")) {
             assertFalse(Protocol.FEATURES.contains(gone), gone + " 已经撤了");
         }

@@ -209,6 +209,19 @@ public final class AutoClassifier implements AutoReviewer {
         return body.isEmpty() ? "审查判定未授权" : (body.length() > 300 ? body.substring(0, 300) + "…" : body);
     }
 
+    /** 一段对话里做过的工具调用，「工具名 参数」一条一项——给审查看（只有调用，没有结果）。 */
+    public static List<String> toolCallsOf(List<ChatMessage> conversation) {
+        List<String> out = new java.util.ArrayList<>();
+        for (ChatMessage m : conversation) {
+            if (m.hasToolCalls()) {
+                for (dev.wiles.myagent.llm.ToolCall c : m.toolCalls()) {
+                    out.add(c.name() + " " + (c.argumentsJson() == null ? "" : c.argumentsJson()));
+                }
+            }
+        }
+        return out;
+    }
+
     static String transcript(Context c, ApprovalRequest request) {
         return transcript(c, request.kind().id(), request.action(), request.subject());
     }
