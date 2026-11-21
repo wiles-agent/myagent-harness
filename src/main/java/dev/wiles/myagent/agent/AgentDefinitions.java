@@ -104,11 +104,13 @@ public final class AgentDefinitions {
      */
     public static AgentDefinitions forHeadless(java.util.function.Function<String, String> env, Path workspace,
                                                Path home) {
+        return headlessOptIn(env) ? load(searchPath(workspace, home)) : builtins();
+    }
+
+    /** {@code MYAGENT_AGENTS} 打开了没有。无头运行里类型定义和技能预载共用这一个开关。 */
+    public static boolean headlessOptIn(java.util.function.Function<String, String> env) {
         String on = env.apply("MYAGENT_AGENTS");
-        if (on == null || !java.util.Set.of("on", "1", "true", "yes").contains(on.strip().toLowerCase(java.util.Locale.ROOT))) {
-            return builtins();
-        }
-        return load(searchPath(workspace, home));
+        return on != null && java.util.Set.of("on", "1", "true", "yes").contains(on.strip().toLowerCase(java.util.Locale.ROOT));
     }
 
     /** 优先级从高到低。 */
