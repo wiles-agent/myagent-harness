@@ -504,21 +504,38 @@ class SubAgentsTest {
         rig.spawn(Map.of("message", "改 a", "agent_type", "iso"));
         awaitIdle(rig.subagents);
         java.nio.file.Path wt = roots.get(0);
-        assertEquals("v1", java.nio.file.Files.readString(ws.resolve("a.txt")), "主工作区不该被动");
-        assertEquals("v2", java.nio.file.Files.readString(wt.resolve("a.txt")));
-        assertFalse(wt.toAbsolutePath().normalize().startsWith(ws.toAbsolutePath().normalize()),
-                "worktree 不放在工作区里，免得主 agent 搜代码搜到两份");
-        String notice = String.join("\n", rig.subagents.drain());
-        assertTrue(notice.contains("myagent/agent-"), "要说清分支，主 agent 才知道去哪儿合并: " + notice);
+        try {
+            assertEquals("v1", java.nio.file.Files.readString(ws.resolve("a.txt")), "主工作区不该被动");
+            assertEquals("v2", java.nio.file.Files.readString(wt.resolve("a.txt")));
+            assertFalse(wt.toAbsolutePath().normalize().startsWith(ws.toAbsolutePath().normalize()),
+                    "worktree 不放在工作区里，免得主 agent 搜代码搜到两份");
+            String notice = String.join("\n", rig.subagents.drain());
+            assertTrue(notice.contains("myagent/agent-"), "要说清分支，主 agent 才知道去哪儿合并: " + notice);
 
-        rig.spawn(Map.of("message", "看看", "agent_type", "iso"));
-        awaitIdle(rig.subagents);
-        java.nio.file.Path untouched = roots.get(1);
-        rig.subagents.stopAll(5_000);         // 无头运行退出前只走这条，不走 shutdown
-        assertTrue(java.nio.file.Files.exists(wt), "有改动的 worktree 留着，等主 agent 合并");
-        assertFalse(java.nio.file.Files.exists(untouched), "没改动的自动收掉（无头运行退出前也得收，不然每跑一次留一个）");
-        rig.subagents.shutdown();
-        assertTrue(java.nio.file.Files.exists(wt));
+            rig.spawn(Map.of("message", "看看", "agent_type", "iso"));
+            awaitIdle(rig.subagents);
+            java.nio.file.Path untouched = roots.get(1);
+            rig.subagents.stopAll(5_000);         // 无头运行退出前只走这条，不走 shutdown
+            assertTrue(java.nio.file.Files.exists(wt), "有改动的 worktree 留着，等主 agent 合并");
+            assertFalse(java.nio.file.Files.exists(untouched), "没改动的自动收掉（无头运行退出前也得收，不然每跑一次留一个）");
+            rig.subagents.shutdown();
+            assertTrue(java.nio.file.Files.exists(wt));
+        } finally {
+            // 有改动的那个按设计会留着；它在系统临时目录里、不归 @TempDir 管，测完自己删，不然每跑一次留一个
+            deleteTree(wt.getParent());
+        }
+    }
+
+    private static void deleteTree(java.nio.file.Path dir) throws java.io.IOException {
+        if (!java.nio.file.Files.exists(dir)) {
+            return;
+        }
+        try (var all = java.nio.file.Files.walk(dir)) {
+            for (java.nio.file.Path p : all.sorted(java.util.Comparator.reverseOrder()).toList()) {
+                p.toFile().setWritable(true);           // git 对象文件是只读的，Windows 上不改删不掉
+                java.nio.file.Files.deleteIfExists(p);
+            }
+        }
     }
 
     @Test
