@@ -1,0 +1,6 @@
+# 判分阶段开网。好几道题的 run-tests.sh 在判分时才 apt-get / 装 uv / pip install，
+# 而 LoopsBench 默认判分容器断网，于是测试脚本自己就跑不起来（退出码 127），结果为空。
+# 只放开 verifier；agent 干活时仍是默认的 allowlist（只通模型端点）。对照组都用同一份，条件一致。
+network:
+  verifier:
+    network_mode: public
