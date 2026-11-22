@@ -30,7 +30,8 @@ public interface Sandbox {
      * 在可写目录里也只读的路径（照 Claude Code 的 protected paths）：改了它们，就能让沙箱外的东西
      * 执行沙箱里写的代码——git 钩子、agent 自己的配置和类型定义、shell 启动文件。
      *
-     * <p>已知的局限：本来不存在的就没东西可挂只读，沙箱里能把它建出来。
+     * <p>本来不存在的：bubblewrap 拿 /dev/null 占住它（{@link #masked}），沙箱里建不出来；跑完由
+     * {@link SandboxRunner} 收掉 bwrap 留在工作区里的空挂载点。Seatbelt 的拒写规则对不存在的路径本来就管用。
      */
     List<String> PROTECTED = List.of(".git/hooks", ".git/config", ".myagent", ".claude", ".mcp.json",
             ".bashrc", ".zshrc", ".profile", ".gitconfig");
@@ -112,6 +113,38 @@ public interface Sandbox {
         };
     }
 
+    /**
+     * 这个沙箱要拿占位挡住的受保护路径（本来不存在的那些）。跑完命令要收掉占位留下的空挂载点。
+     * 默认没有：只有 bubblewrap 需要。
+     */
+    default List<Path> masked(Path workspace) {
+        return List.of();
+    }
+
+    /**
+     * 工作区里本来不存在的受保护路径。还不是 git 仓库时 {@code .git/...} 不算——占住 .git 会让 git init 都跑不了；
+     * 而 init 之后下一条命令起 .git/hooks 就在了，照常只读。
+     */
+    static List<Path> missingProtected(Path workspace) {
+        List<Path> out = new ArrayList<>();
+        for (String p : PROTECTED) {
+            Path path = workspace.resolve(p);
+            if (Files.exists(path, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                continue;
+            }
+            if (!Files.isDirectory(path.getParent())) {
+                continue;                           // 上一级都没有（还没 git init）：不占
+            }
+            out.add(path);
+        }
+        return out;
+    }
+
+    /** 工作区里所有受保护路径，不管在不在（Seatbelt 的拒写规则用）。 */
+    static List<Path> allProtected(Path workspace) {
+        return PROTECTED.stream().map(workspace::resolve).toList();
+    }
+
     /** 工作区里已经存在的受保护路径。 */
     static List<Path> protectedIn(Path workspace) {
         List<Path> out = new ArrayList<>();
@@ -140,6 +173,11 @@ public interface Sandbox {
             return null;
         }
 
+        @Override
+        public List<Path> masked(Path workspace) {
+            return missingProtected(workspace);
+        }
+
         public List<String> wrap(List<String> argv, Path ws, Path scratch, Endpoint proxy, SandboxSettings s) {
             List<String> a = new ArrayList<>(List.of("bwrap", "--die-with-parent", "--new-session",
                     "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc",
@@ -152,6 +190,10 @@ public interface Sandbox {
             // 受保护路径挂在工作区之后，才盖得住
             for (Path p : protectedIn(ws)) {
                 a.addAll(List.of("--ro-bind", p.toString(), p.toString()));
+            }
+            // 不存在的拿 /dev/null 占住：mkdir 撞 EEXIST，往里写撞 ENOTDIR，直接写撞只读
+            for (Path p : masked(ws)) {
+                a.addAll(List.of("--ro-bind", "/dev/null", p.toString()));
             }
             a.add("--unshare-net");                 // 单独的网络命名空间：只有回环，没有出去的路
             boolean bridged = proxy != null && proxy.socket() != null && socat;
@@ -200,7 +242,7 @@ public interface Sandbox {
             for (String dir : s.allowWrite()) {
                 p.append("(allow file-write* (subpath ").append(q(Path.of(dir))).append("))\n");
             }
-            for (Path prot : protectedIn(ws)) {
+            for (Path prot : allProtected(ws)) {
                 p.append("(deny file-write* (subpath ").append(q(prot)).append("))\n");
             }
             p.append("(deny network*)\n");

@@ -51,6 +51,19 @@ public class SandboxSmoke {
         r = run(bash, "echo evil > .git/hooks/pre-commit; echo rc=$?", false);
         check(".git/hooks 只读", !Files.exists(ws.resolve(".git/hooks/pre-commit")), r);
 
+        // 本来不存在的受保护路径：bwrap 拿 /dev/null 占住，建不出来；跑完挂载点收干净
+        r = run(bash, "python3 -c \"import os; os.makedirs('.myagent/agents', exist_ok=True); open('.myagent/agents/r.md','w').write('x')\"; echo rc=$?", false);
+        check("不存在的 .myagent 在沙箱里建不出来", !Files.exists(ws.resolve(".myagent")) && r.contains("rc=1"), r);
+        r = run(bash, "python3 -c \"open('.mcp.json','w').write('{}')\"; echo rc=$?", false);
+        check("不存在的 .mcp.json 在沙箱里写不出来", !Files.exists(ws.resolve(".mcp.json")) && r.contains("rc=1"), r);
+        run(bash, "true", false);
+        List<String> left;
+        try (var files = Files.list(ws)) {
+            left = files.map(f -> f.getFileName().toString()).toList();
+        }
+        check("跑完宿主机的工作区里没留下占位的空挂载点", left.equals(List.of(".git", "inside.txt"))
+                || left.equals(List.of("inside.txt", ".git")), left.toString());
+
         r = run(bash, "python3 -c \"open('/tmp/smoke-marker','w').write('s')\" && cat /tmp/smoke-marker", false);
         check("沙箱里的 /tmp 能写，而且和外面的 /tmp 是两个", r.contains("s") && !Files.exists(Path.of("/tmp/smoke-marker")), r);
         r = run(bash, "cat /tmp/smoke-marker", false);

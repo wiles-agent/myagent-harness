@@ -81,11 +81,39 @@ public final class SandboxRunner {
         NetworkProxy.HostDecider decider = hostDecider(approval);
         NetworkProxy proxy = sandbox.wantsTcpProxy() ? NetworkProxy.tcp(settings, decider)
                 : NetworkProxy.unix(net.resolve("p.sock"), settings, decider);
+        List<Path> masks = sandbox.masked(workspace);
+        masks.forEach(m -> MASK_USERS.merge(m.toAbsolutePath().normalize(), 1, Integer::sum));
         try (proxy) {
             return exec.run(sandbox.wrap(argv, workspace, scratch, proxy.endpoint(), settings));
         } finally {
             deleteTree(net);                    // 代理的 socket 每条命令一个；/tmp 留着
+            masks.forEach(SandboxRunner::releaseMask);
         }
+    }
+
+    /**
+     * 占位挂载点有几条命令正在用。并行的子 agent 可能同时在一个工作区里跑沙箱命令：
+     * 先跑完的那条要是把挂载点删了，另一条沙箱里的占位就跟着没了。
+     */
+    private static final java.util.concurrent.ConcurrentHashMap<Path, Integer> MASK_USERS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** 最后一个用它的命令跑完时，收掉 bwrap 留在工作区里的空挂载点。不是空文件的不动——那不是 bwrap 留的。 */
+    private static void releaseMask(Path mask) {
+        Path key = mask.toAbsolutePath().normalize();
+        MASK_USERS.compute(key, (k, n) -> {
+            if (n != null && n > 1) {
+                return n - 1;
+            }
+            try {
+                if (Files.isRegularFile(k, java.nio.file.LinkOption.NOFOLLOW_LINKS) && Files.size(k) == 0) {
+                    Files.delete(k);
+                }
+            } catch (IOException e) {
+                log.warn("收不掉沙箱留下的挂载点 {}: {}", k, e.getMessage());
+            }
+            return null;
+        });
     }
 
     /** 代理问「这个主机能不能连」的那一头：名单外的走审批链；名单内的也先过 NETWORK 的 deny / ask 规则。 */

@@ -583,9 +583,10 @@ WebSocket 服务，握手信息（端口 + 一次性 token）打在 stdout。照
   设 `failIfUnavailable: true` 则启动就停。
 - **文件**：整机可读；只能写工作区、这段会话的临时目录（沙箱里的 `/tmp`：和外面的不是一个，跨命令留着，进程退出时收掉）、`allowWrite` 列的目录。
   `.git/hooks`、`.git/config`、`.myagent`、`.claude`、shell 启动文件这些**在工作区里也只读**——改了它们，沙箱外的东西就会执行沙箱里写的代码。
-  已知局限：本来不存在的受保护路径没东西可挂只读，沙箱里能把它建出来。
+  本来不存在的（比如还没有 `.myagent`）bubblewrap 拿 `/dev/null` 占住，沙箱里建不出来；跑完把 bwrap 留在工作区里的空挂载点收掉。
+  还不是 git 仓库时不占 `.git`，免得 `git init` 都跑不了。
 - **网络**：沙箱里没有直通网络的路（单独的网络命名空间），唯一的出口是外面的代理，按**主机名**判：`deniedDomains` 一律拒，
-  `allowedDomains` 放行，都不在的 `strictAllowlist` 下拒，否则问一次（审批类型 `network`：手动模式问人、auto 交给审查、dontAsk 拒）。
+  `allowedDomains` 放行（但 `network` 类型的 deny / ask 规则先说话，名单上的主机也管），都不在的 `strictAllowlist` 下拒，否则问一次（审批类型 `network`：手动模式问人、auto 交给审查、dontAsk 拒）。
   只认 HTTP 代理协议（HTTPS 走 CONNECT、不解 TLS）；不认代理变量的工具（裸 `ssh`、数据库驱动）连放行的主机也连不上。
 - **审批**：沙箱里的命令**不问人**（auto-allow），但 deny 规则照样拦，auto 下照样过审查；`autoAllow: false` 则照常审批。
 - **沙箱外重跑**：真因为沙箱跑不通时，模型可以带 `dangerously_disable_sandbox: true` 重跑——**哪怕是 `echo` 也要单独批**。
@@ -644,7 +645,8 @@ WebSocket 服务，握手信息（端口 + 一次性 token）打在 stdout。照
 **ask 规则**（照 Claude Code 的 `permissions.ask`）：`"ask": [{"tool": "bash", "match": "git push *"}]`。
 优先级 deny > ask > allow——批过 `git push origin main` 也照样问。撞上 ask 规则**一定问人**：auto 下不交给审查，
 沙箱里的自动放行不算数，守卫判成安全的命令也问；`dontAsk` 和无头运行没人可问，直接拒。
-对 bash 每条命令都生效；对写文件和联网，在它们本来就要判审批的时候生效。
+对每一次动作都生效：bash 每条命令；写文件连新建、能回滚的改动也算（`write` 类型的 deny 规则同理）；
+联网连沙箱放行名单上的主机也算。
 
 **受保护路径**（照 Claude Code）：`.myagent/`、`.claude/`、`.mcp.json`、shell 启动文件、`.gitconfig`、`.git/hooks`、`.git/config`。
 写它们哪种模式都要问——新建也问、能回滚也问，**不吃 allow 规则**：改了它们，下次 agent 的类型定义、hook 或 shell 就会执行里面的东西。

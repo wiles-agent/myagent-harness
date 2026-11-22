@@ -60,4 +60,34 @@ class SandboxRunnerTest {
         assertNull(d.ruled("github.com"));
         assertTrue(asked.isEmpty());
     }
+
+    @Test
+    @DisplayName("跑完收掉 bwrap 为占位留在工作区里的空挂载点；命令自己真写了东西的不动")
+    void removesMountPointsLeftByBwrap() throws Exception {
+        Path ws = java.nio.file.Files.createDirectories(tmp.resolve("ws"));
+        Path mask = ws.resolve(".myagent");
+        Sandbox fake = new Sandbox() {
+            public String name() {
+                return "fake";
+            }
+
+            public String unavailable() {
+                return null;
+            }
+
+            public List<String> wrap(List<String> argv, Path w, Path scratch, Sandbox.Endpoint proxy, SandboxSettings s) {
+                return argv;
+            }
+
+            @Override
+            public List<Path> masked(Path w) {
+                return List.of(w.resolve(".myagent"));
+            }
+        };
+        SandboxRunner runner = new SandboxRunner(SandboxSettings.parse(
+                new com.fasterxml.jackson.databind.ObjectMapper().readTree("{\"enabled\":true}")),
+                fake, dev.wiles.myagent.tool.safety.ApprovalPolicy.denyAll());
+        runner.run(List.of("x"), ws, argv -> java.nio.file.Files.createFile(mask));   // bwrap 留下的空文件
+        assertFalse(java.nio.file.Files.exists(mask), "空挂载点要收掉");
+    }
 }

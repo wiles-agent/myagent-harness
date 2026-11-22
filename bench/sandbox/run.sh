@@ -6,7 +6,9 @@ cd "$(dirname "$0")/../.."
 mvn -q package -DskipTests
 rm -rf bench/sandbox/classes && javac -encoding UTF-8 --release 17 -cp target/myagent.jar -d bench/sandbox/classes bench/sandbox/SandboxSmoke.java
 docker build --pull=false -q -t myagent-sandbox-smoke bench/sandbox >/dev/null
-docker run --rm --privileged -v "$PWD:/repo" myagent-sandbox-smoke sh -c '
+# Windows 的 Git Bash 下要 Windows 路径、并关掉 MSYS 的路径改写
+REPO=$(pwd -W 2>/dev/null || pwd)
+MSYS_NO_PATHCONV=1 docker run --rm --privileged -v "$REPO:/repo" myagent-sandbox-smoke sh -c '
   mkdir -p /srv && echo SMOKE-OK > /srv/index.html
   (cd /srv && python3 -m http.server 8099 --bind 127.0.0.1 >/dev/null 2>&1 &)
   sleep 1

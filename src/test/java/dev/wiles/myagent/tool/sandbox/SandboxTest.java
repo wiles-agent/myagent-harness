@@ -145,4 +145,52 @@ class SandboxTest {
         assertTrue(profile.contains("(deny network*)"), profile);
         assertEquals(List.of("sh", "/tmp/cmd.sh"), argv.subList(argv.size() - 2, argv.size()));
     }
+
+    // ---------- 本来不存在的受保护路径 ----------
+
+    @Test
+    @DisplayName("bubblewrap：不存在的受保护路径拿 /dev/null 占住——沙箱里建不出 .myagent / .mcp.json，也写不进 .git/hooks")
+    void bubblewrapMasksMissingProtectedPaths() throws Exception {
+        Path ws = Files.createDirectories(tmp.resolve("ws"));
+        Files.createDirectories(ws.resolve(".git"));       // 有仓库、没 hooks 目录
+        Sandbox bwrap = Sandbox.forPlatform("Linux", c -> true);
+        String line = String.join(" ", bwrap.wrap(List.of("sh", "/tmp/cmd.sh"), ws, tmp, null,
+                SandboxSettings.parse(M.readTree("{\"enabled\":true}"))));
+        for (String missing : List.of(".myagent", ".mcp.json", ".git/hooks", ".git/config")) {
+            assertTrue(line.contains("--ro-bind /dev/null " + ws.resolve(missing)), missing + ": " + line);
+        }
+        assertEquals(bwrap.masked(ws).size(), countOf(line, "--ro-bind /dev/null "),
+                "占位的就是 masked() 报的那些，跑完要收掉 bwrap 留下的挂载点");
+        assertTrue(line.indexOf("--bind " + ws) < line.indexOf("--ro-bind /dev/null"), "要挂在工作区之后: " + line);
+    }
+
+    @Test
+    @DisplayName("bubblewrap：还不是 git 仓库时不占 .git——不然沙箱里 git init 都跑不了")
+    void bubblewrapLeavesGitInitAlone() throws Exception {
+        Path ws = Files.createDirectories(tmp.resolve("ws"));
+        Sandbox bwrap = Sandbox.forPlatform("Linux", c -> true);
+        String line = String.join(" ", bwrap.wrap(List.of("sh", "/tmp/cmd.sh"), ws, tmp, null,
+                SandboxSettings.parse(M.readTree("{\"enabled\":true}"))));
+        assertFalse(line.contains(ws.resolve(".git") + " "), line);
+        assertFalse(line.contains(ws.resolve(".git/hooks").toString()), line);
+        assertTrue(line.contains("--ro-bind /dev/null " + ws.resolve(".myagent")), line);
+    }
+
+    @Test
+    @DisplayName("Seatbelt：拒写规则对不存在的路径本来就管用，受保护路径不管在不在都写进去")
+    void seatbeltDeniesMissingProtectedPaths() throws Exception {
+        Path ws = Files.createDirectories(tmp.resolve("ws"));
+        String profile = Sandbox.forPlatform("Mac OS X", c -> true)
+                .wrap(List.of("sh"), ws, tmp, null, SandboxSettings.parse(M.readTree("{\"enabled\":true}"))).get(2);
+        String q = ws.resolve(".myagent").toString().replace("\\", "\\\\");
+        assertTrue(profile.contains("(deny file-write* (subpath \"" + q + "\"))"), profile);
+    }
+
+    private static int countOf(String s, String needle) {
+        int n = 0;
+        for (int i = s.indexOf(needle); i >= 0; i = s.indexOf(needle, i + 1)) {
+            n++;
+        }
+        return n;
+    }
 }
