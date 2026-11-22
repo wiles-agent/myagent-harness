@@ -162,7 +162,8 @@ class CodeTriageTest {
         CodeTriageGate high = new CodeTriageGate(human, new CodeTriage(new FakeLlm().says("HIGH\n会删工作区外的文件"), ws));
         assertFalse(high.decide(ApprovalRequest.bash("python3 t.py", "要用 python3 运行代码")).approved());
         assertEquals(1, asked.size());
-        assertTrue(asked.get(0).reason().contains("会删工作区外的文件"), asked.get(0).reason());
+        assertTrue(asked.get(0).reason().startsWith("代码风险审查判为高风险：会删工作区外的文件"),
+                "审查理由放最前面——界面上原因只有一行，放后面会被截掉: " + asked.get(0).reason());
     }
 
     @Test

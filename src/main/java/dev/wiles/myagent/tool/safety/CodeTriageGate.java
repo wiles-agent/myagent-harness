@@ -41,7 +41,9 @@ public final class CodeTriageGate implements ApprovalPolicy {
             log.info("代码风险审查判低风险，不问人: {}（{}）", request.subject(), result.reason());
             return ApprovalVerdict.yes();
         }
+        // 审查的理由放最前面：界面上原因只有一行，放在守卫那句长理由后面会被截掉
         return human.decide(new ApprovalRequest(request.kind(), request.action(), request.subject(),
-                request.reason() + "；代码风险审查：" + result.reason(), request.preview(), request.origin()));
+                "代码风险审查判为高风险：" + result.reason() + "（" + request.reason() + "）",
+                request.preview(), request.origin()));
     }
 }
