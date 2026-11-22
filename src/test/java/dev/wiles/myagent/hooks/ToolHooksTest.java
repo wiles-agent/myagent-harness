@@ -83,4 +83,55 @@ class ToolHooksTest {
         assertFalse(d.warnings().isEmpty());
         assertTrue(ToolHooks.parse(M.readTree("{}"), cwd).isEmpty());
     }
+
+    // ---------- 会话级：PostToolUse、additionalContext、settings.json ----------
+
+    @Test
+    @DisplayName("PostToolUse（照 Claude Code）：工具已经跑了拦不住；退出码 2 的 stderr、decision=block 的 reason、additionalContext 都交给模型")
+    void postToolUseFeedsBack(@TempDir Path cwd) throws Exception {
+        ToolHooks two = ToolHooks.parse(M.readTree("""
+                {"PostToolUse": [{"matcher": "Write", "hooks": [{"command": "echo '这是生成的文件，改 schema.ts' >&2; exit 2"}]}]}"""),
+                cwd, ToolHooks.POST);
+        assertEquals("这是生成的文件，改 schema.ts", two.after("write_file", "{}", "已写入", true));
+        assertNull(two.after("read_file", "{}", "x", true), "没对上的工具不跑");
+
+        ToolHooks block = ToolHooks.parse(M.readTree("""
+                {"PostToolUse": [{"hooks": [{"command": "echo '{\\"decision\\":\\"block\\",\\"reason\\":\\"lint 没过\\"}'"}]}]}"""),
+                cwd, ToolHooks.POST);
+        assertEquals("lint 没过", block.after("edit_file", "{}", "已修改", true));
+
+        ToolHooks ctx = ToolHooks.parse(M.readTree("""
+                {"PostToolUse": [{"hooks": [{"command": "cat > post.json; echo '{\\"hookSpecificOutput\\":{\\"additionalContext\\":\\"记得跑测试\\"}}'"}]}]}"""),
+                cwd, ToolHooks.POST);
+        assertEquals("记得跑测试", ctx.after("bash", "{\"command\":\"ls\"}", "a.txt", true));
+        JsonNode seen = M.readTree(cwd.resolve("post.json").toFile());
+        assertEquals("PostToolUse", seen.path("hook_event_name").asText());
+        assertEquals("a.txt", seen.path("tool_response").asText(), "工具的输出交给 hook");
+    }
+
+    @Test
+    @DisplayName("PreToolUse 放行时的 additionalContext 跟着结果交给模型")
+    void preToolUseContext(@TempDir Path cwd) throws Exception {
+        ToolHooks h = hooks("""
+                {"PreToolUse": [{"hooks": [{"command": "echo '{\\"hookSpecificOutput\\":{\\"additionalContext\\":\\"生产库只读\\"}}'"}]}]}""", cwd);
+        ToolHooks.Decision d = h.check("bash", "{}");
+        assertFalse(d.blocked());
+        assertEquals("生产库只读", d.context());
+    }
+
+    @Test
+    @DisplayName("会话级 hook 从家目录和工作区的 settings.json 读，两份合并（照 Claude Code）")
+    void sessionHooksLoadBothSettings(@TempDir Path tmp) throws Exception {
+        Path home = java.nio.file.Files.createDirectories(tmp.resolve("home/.myagent"));
+        Path ws = java.nio.file.Files.createDirectories(tmp.resolve("ws/.myagent"));
+        java.nio.file.Files.writeString(home.resolve("settings.json"), """
+                {"hooks": {"PreToolUse": [{"matcher": "Bash", "hooks": [{"command": "exit 2"}]}]}}""");
+        java.nio.file.Files.writeString(ws.resolve("settings.json"), """
+                {"hooks": {"PostToolUse": [{"hooks": [{"command": "echo hi >&2; exit 2"}]}]}}""");
+        SessionHooks s = SessionHooks.load(home.resolve("settings.json"), tmp.resolve("ws"));
+        assertTrue(s.pre().check("bash", "{}").blocked());
+        assertEquals("hi", s.post().after("read_file", "{}", "x", true));
+        assertTrue(SessionHooks.NONE.isEmpty());
+        assertFalse(s.isEmpty());
+    }
 }

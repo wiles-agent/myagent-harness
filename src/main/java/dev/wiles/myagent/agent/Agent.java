@@ -318,7 +318,31 @@ public final class Agent {
             return ToolResult.error(name + " 是延迟加载的工具，还没拉取过它的参数说明。先调 "
                     + ToolSearchTool.NAME + "(query=\"select:" + name + "\")，再调它");
         }
-        return tools.execute(call);
+        if (toolHooks.isEmpty()) {
+            return tools.execute(call);
+        }
+        dev.wiles.myagent.hooks.ToolHooks.Decision pre = toolHooks.pre().check(name, call.argumentsJson());
+        if (pre.blocked()) {
+            return ToolResult.error("被 PreToolUse hook 拦下了: " + pre.reason());
+        }
+        ToolResult result = tools.execute(call);
+        String post = toolHooks.post().after(name, call.argumentsJson(), result.content(), result.ok());
+        String extra = String.join("\n", java.util.stream.Stream.of(pre.context(), post)
+                .filter(t -> t != null && !t.isBlank()).toList());
+        return extra.isEmpty() ? result
+                : new ToolResult(result.ok(), result.content() + "\n\n[hook] " + extra, result.diff());
+    }
+
+    /** 会话级的工具 hook（照 Claude Code 的 settings.json hooks）。子 agent 从父 agent 继承。 */
+    private volatile dev.wiles.myagent.hooks.SessionHooks toolHooks = dev.wiles.myagent.hooks.SessionHooks.NONE;
+
+    public Agent withToolHooks(dev.wiles.myagent.hooks.SessionHooks hooks) {
+        this.toolHooks = hooks == null ? dev.wiles.myagent.hooks.SessionHooks.NONE : hooks;
+        return this;
+    }
+
+    public dev.wiles.myagent.hooks.SessionHooks toolHooks() {
+        return toolHooks;
     }
 
     /** 告诉它哪些工具算「改了文件」，钉住块要用。 */

@@ -1143,4 +1143,30 @@ class AgentTest {
         agent.reset();
         assertEquals(1, agent.history().size());
     }
+
+    // ---------- 会话级工具 hook（照 Claude Code 的 PreToolUse / PostToolUse） ----------
+
+    @Test
+    @DisplayName("会话级 PreToolUse 拦下：工具没跑，理由回给模型；PostToolUse 的反馈接在结果后面")
+    void sessionToolHooks(@org.junit.jupiter.api.io.TempDir java.nio.file.Path cwd) throws Exception {
+        java.util.concurrent.atomic.AtomicInteger ran = new java.util.concurrent.atomic.AtomicInteger();
+        FakeLlm llm = new FakeLlm()
+                .calls(null, ToolCall.of("c1", "bash", "{\"command\":\"rm -rf x\"}"), ToolCall.of("c2", "read_file", "{}"))
+                .says("好了");
+        ToolRegistry tools = new ToolRegistry()
+                .register(tool("bash", a -> { ran.incrementAndGet(); return ToolResult.ok("删了"); }))
+                .register(tool("read_file", a -> ToolResult.ok("内容")));
+        var json = new com.fasterxml.jackson.databind.ObjectMapper().readTree("""
+                {"PreToolUse": [{"matcher": "Bash", "hooks": [{"command": "echo '不许删' >&2; exit 2"}]}],
+                 "PostToolUse": [{"matcher": "Read", "hooks": [{"command": "echo '这个文件是生成的' >&2; exit 2"}]}]}""");
+        Agent agent = new Agent(llm, tools, "sys").withToolHooks(new dev.wiles.myagent.hooks.SessionHooks(
+                dev.wiles.myagent.hooks.ToolHooks.parse(json, cwd),
+                dev.wiles.myagent.hooks.ToolHooks.parse(json, cwd, dev.wiles.myagent.hooks.ToolHooks.POST)));
+        agent.run("做");
+
+        assertEquals(0, ran.get(), "被 PreToolUse 拦下的工具不该跑");
+        assertTrue(resultOf(agent.conversation(), "c1").contains("不许删"), resultOf(agent.conversation(), "c1"));
+        String read = resultOf(agent.conversation(), "c2");
+        assertTrue(read.startsWith("内容") && read.contains("这个文件是生成的"), read);
+    }
 }

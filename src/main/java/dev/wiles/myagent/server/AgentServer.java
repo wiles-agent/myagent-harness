@@ -385,6 +385,7 @@ public final class AgentServer extends WebSocketServer {
                         .withPrecompute(new Precompute(contextManager(options.readOnly()),
                                 () -> newClient()))
                         .withWritingTools(BuiltinTools.WRITING_TOOLS)
+                        .withToolHooks(dev.wiles.myagent.hooks.SessionHooks.load(workspace.root()))
                         .withToolGate(planMode::allows)
                         .onEvent(this::onAgentEvent)
                 : null;

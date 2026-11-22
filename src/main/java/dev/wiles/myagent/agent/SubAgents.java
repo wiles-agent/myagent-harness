@@ -1816,6 +1816,7 @@ public final class SubAgents implements Mailbox {
                                     preloadedSkills(role)),
                     role.maxTurns() > 0 ? role.maxTurns() : settings.childMaxSteps(), contexts.get())
                     .withWritingTools(BuiltinTools.WRITING_TOOLS)
+                    .withToolHooks(parentAgent.toolHooks())   // 会话级 hook 管整棵树（照 Claude Code）
                     .withStepBudget(settings.budget())
                     .withToolGate(fork ? SubAgents.this::forkMayUse
                             : role.permissionMode() == AgentDefinition.PermissionMode.PLAN

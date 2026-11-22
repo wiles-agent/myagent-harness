@@ -40,6 +40,8 @@ public final class ToolHooks {
     private static final Logger log = LoggerFactory.getLogger(ToolHooks.class);
     private static final ObjectMapper JSON = new ObjectMapper();
     public static final String EVENT = "PreToolUse";
+    /** 工具跑完之后（照 Claude Code）：拦不住了，反馈交给模型。 */
+    public static final String POST = "PostToolUse";
     private static final int DEFAULT_TIMEOUT_SECONDS = 60;
 
     /** 一组：matcher（null 表示全部）和它下面的命令。 */
@@ -54,18 +56,31 @@ public final class ToolHooks {
      * @param blocked  拦下了吗；拦下时 {@code reason} 是给模型的理由
      * @param warnings hook 自己出的问题
      */
-    public record Decision(boolean blocked, String reason, List<String> warnings) {
-        static final Decision PASS = new Decision(false, "", List.of());
+    public record Decision(boolean blocked, String reason, List<String> warnings, String context) {
+        static final Decision PASS = new Decision(false, "", List.of(), "");
+
+        Decision(boolean blocked, String reason, List<String> warnings) {
+            this(blocked, reason, warnings, "");
+        }
     }
 
-    public static final ToolHooks NONE = new ToolHooks(List.of(), Path.of("."));
+    public static final ToolHooks NONE = new ToolHooks(List.of(), Path.of("."), EVENT);
 
     private final List<Group> groups;
     private final Path cwd;
+    private final String event;
 
-    ToolHooks(List<Group> groups, Path cwd) {
+    ToolHooks(List<Group> groups, Path cwd, String event) {
         this.groups = List.copyOf(groups);
         this.cwd = cwd;
+        this.event = event;
+    }
+
+    /** 两份合成一份：先跑这份的，再跑那份的（家目录在前、工作区在后）。 */
+    public ToolHooks plus(ToolHooks more) {
+        List<Group> all = new ArrayList<>(groups);
+        all.addAll(more.groups);
+        return new ToolHooks(all, cwd, event);
     }
 
     /**
@@ -73,14 +88,19 @@ public final class ToolHooks {
      * {@link IllegalArgumentException}——调用方据此作废整份定义：写了 hook 却没生效，比没写更糟。
      */
     public static ToolHooks parse(JsonNode hooks, Path cwd) {
+        return parse(hooks, cwd, EVENT);
+    }
+
+    /** 读某一个事件（{@link #EVENT}、{@link #POST} ……）的那几组。 */
+    public static ToolHooks parse(JsonNode hooks, Path cwd, String event) {
         List<Group> groups = new ArrayList<>();
-        for (JsonNode group : hooks.path(EVENT)) {
+        for (JsonNode group : hooks.path(event)) {
             String raw = group.path("matcher").asText("").strip();
             Pattern matcher;
             try {
                 matcher = raw.isEmpty() || "*".equals(raw) ? null : Pattern.compile(raw);
             } catch (PatternSyntaxException e) {
-                throw new IllegalArgumentException("PreToolUse 的 matcher 不是合法的正则: " + raw);
+                throw new IllegalArgumentException(event + " 的 matcher 不是合法的正则: " + raw);
             }
             List<PromptHooks.Command> commands = new ArrayList<>();
             for (JsonNode hook : group.path("hooks")) {
@@ -96,7 +116,7 @@ public final class ToolHooks {
                 groups.add(new Group(matcher, commands));
             }
         }
-        return new ToolHooks(groups, cwd);
+        return new ToolHooks(groups, cwd, event);
     }
 
     public boolean isEmpty() {
@@ -108,19 +128,10 @@ public final class ToolHooks {
         if (groups.isEmpty()) {
             return Decision.PASS;
         }
-        ObjectNode input = JSON.createObjectNode();
-        input.put("hook_event_name", EVENT);
-        input.put("tool_name", ClaudeCodeNames.forHooks(tool));
-        input.put("myagent_tool_name", tool);
-        try {
-            input.set("tool_input", JSON.readTree(argumentsJson == null || argumentsJson.isBlank() ? "{}" : argumentsJson));
-        } catch (IOException e) {
-            input.put("tool_input", argumentsJson);
-        }
-        input.put("cwd", String.valueOf(cwd));
-        byte[] stdin = input.toString().getBytes(StandardCharsets.UTF_8);
+        byte[] stdin = input(tool, argumentsJson).toString().getBytes(StandardCharsets.UTF_8);
 
         List<String> warnings = new ArrayList<>();
+        List<String> context = new ArrayList<>();
         for (Group group : groups) {
             if (!group.matches(tool)) {
                 continue;
@@ -145,10 +156,87 @@ public final class ToolHooks {
                     return new Decision(true, denied.isEmpty() ? "被 hook「" + command.command() + "」拦下了" : denied,
                             warnings);
                 }
+                String extra = additionalContext(r.stdout().strip());
+                if (!extra.isEmpty()) {
+                    context.add(extra);
+                }
             }
         }
         warnings.forEach(w -> log.warn("{}", w));
-        return new Decision(false, "", warnings);
+        return new Decision(false, "", warnings, String.join("\n", context));
+    }
+
+    private ObjectNode input(String tool, String argumentsJson) {
+        ObjectNode input = JSON.createObjectNode();
+        input.put("hook_event_name", event);
+        input.put("tool_name", ClaudeCodeNames.forHooks(tool));
+        input.put("myagent_tool_name", tool);
+        try {
+            input.set("tool_input", JSON.readTree(argumentsJson == null || argumentsJson.isBlank() ? "{}" : argumentsJson));
+        } catch (IOException e) {
+            input.put("tool_input", argumentsJson);
+        }
+        input.put("cwd", String.valueOf(cwd));
+        return input;
+    }
+
+    /**
+     * 工具跑完之后（{@link #POST}，照 Claude Code 的 PostToolUse）：工具已经跑了，拦不住，
+     * 只把 hook 的话交给模型——退出码 2 的 stderr、{@code decision=block} 的 reason、{@code additionalContext}。
+     *
+     * @return 要接在结果后面给模型看的话；没有就 null
+     */
+    public String after(String tool, String argumentsJson, String output, boolean ok) {
+        if (groups.isEmpty()) {
+            return null;
+        }
+        ObjectNode input = input(tool, argumentsJson);
+        input.put("tool_response", output == null ? "" : output);
+        input.put("tool_succeeded", ok);
+        byte[] stdin = input.toString().getBytes(StandardCharsets.UTF_8);
+        List<String> said = new ArrayList<>();
+        for (Group group : groups) {
+            if (!group.matches(tool)) {
+                continue;
+            }
+            for (PromptHooks.Command command : group.commands()) {
+                HookRunner.Result r = HookRunner.run(command.command(), command.timeoutSeconds(), cwd, stdin);
+                if (r.error() != null) {
+                    log.warn("hook「{}」{}", command.command(), r.error());
+                    continue;
+                }
+                if (r.exit() == 2) {
+                    if (!r.stderr().isBlank()) {
+                        said.add(r.stderr().strip());
+                    }
+                    continue;
+                }
+                if (r.exit() != 0) {
+                    log.warn("hook「{}」退出码 {}", command.command(), r.exit());
+                    continue;
+                }
+                String blocked = denied(r.stdout().strip());
+                if (blocked != null && !blocked.isEmpty()) {
+                    said.add(blocked);
+                }
+                String extra = additionalContext(r.stdout().strip());
+                if (!extra.isEmpty()) {
+                    said.add(extra);
+                }
+            }
+        }
+        return said.isEmpty() ? null : String.join("\n", said);
+    }
+
+    private static String additionalContext(String stdout) {
+        if (!stdout.startsWith("{")) {
+            return "";
+        }
+        try {
+            return JSON.readTree(stdout).path("hookSpecificOutput").path("additionalContext").asText("").strip();
+        } catch (IOException e) {
+            return "";
+        }
     }
 
     /** stdout 是表示拒绝的 JSON 时返回理由（可能是空串），否则 null。 */

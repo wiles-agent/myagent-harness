@@ -883,6 +883,34 @@ class SubAgentsTest {
     }
 
     @Test
+    @DisplayName("会话级 hook（settings.json，照 Claude Code）：子 agent 跟着主 agent 一起受管，嵌套下去的也一样")
+    void sessionHooksReachChildren(@org.junit.jupiter.api.io.TempDir java.nio.file.Path workspace) throws Exception {
+        List<String> ran = new CopyOnWriteArrayList<>();
+        Tool bash = new Tool() {
+            public String name() { return "bash"; }
+            public String description() { return "bash"; }
+            public String parametersSchema() { return "{\"type\":\"object\",\"properties\":{}}"; }
+            public ToolResult execute(JsonNode args) {
+                ran.add(args.path("command").asText());
+                return ToolResult.ok("退出码: 0");
+            }
+        };
+        Script child = new Script().call("bash", "{\"command\": \"rm -rf build\"}").reply("删不了");
+        Rig rig = new Rig(workspace, SubAgents.Mode.ON, 0, SubAgents.Settings.defaults(0), child);
+        rig.tools.replace(bash);
+        JsonNode hooks = M.readTree("""
+                {"PreToolUse": [{"matcher": "Bash", "hooks": [{"command": "echo '会话规矩：不许 rm' >&2; exit 2"}]}]}""");
+        rig.parent.withToolHooks(new dev.wiles.myagent.hooks.SessionHooks(
+                dev.wiles.myagent.hooks.ToolHooks.parse(hooks, workspace), dev.wiles.myagent.hooks.ToolHooks.NONE));
+
+        rig.spawn(Map.of("message", "清理", "agent_type", "default"));
+        awaitIdle(rig.subagents);
+        assertTrue(ran.isEmpty(), "子 agent 的 bash 也要过会话级 hook: " + ran);
+        String refused = child.seen.get(1).get(child.seen.get(1).size() - 1).content();
+        assertTrue(refused.contains("会话规矩：不许 rm"), refused);
+    }
+
+    @Test
     @DisplayName("effort：服务支持思考开关时，low 关、其余开；不支持就不碰（不给官方接口发它不认的字段）；fork 不受影响")
     void effortMapsToThinkingOnlyWhenSupported() throws Exception {
         List<String> built = new CopyOnWriteArrayList<>();

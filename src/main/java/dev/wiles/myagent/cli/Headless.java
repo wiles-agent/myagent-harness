@@ -271,6 +271,7 @@ public final class Headless {
                     SystemPrompt.forWorkspace(workspace.root(), index, false),
                     maxSteps, new ContextManager(config.contextTokens()))
                     .withWritingTools(BuiltinTools.WRITING_TOOLS)
+                    .withToolHooks(dev.wiles.myagent.hooks.SessionHooks.load(workspace.root()))
                     .withStepBudget(budget);
             liveAgent.set(agent);
             if (budget != null) {

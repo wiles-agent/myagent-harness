@@ -494,6 +494,28 @@ agent 不按关键词猜你的意图，但总有确定性的规则想加——�
 只给模型看；`/resume` 摊回来的对话里会剥掉。工作区里的 `.myagent/settings.json` 跟着仓库走，
 所以第一次进一个目录时的信任确认也管着它。
 
+### hook：每次调工具前后
+
+同一份 `settings.json` 里还认 `PreToolUse` 和 `PostToolUse`（照 Claude Code）。它们管**整个会话**：
+主 agent 和它派出去的所有子 agent（嵌套下去的也算）。子 agent 类型定义里的 `hooks` 只管那一种，在这一层之后跑。
+
+```json
+{"hooks": {
+  "PreToolUse":  [{"matcher": "Bash", "hooks": [{"type": "command", "command": "sh ~/.myagent/hooks/no-prod.sh"}]}],
+  "PostToolUse": [{"matcher": "Edit|Write", "hooks": [{"type": "command", "command": "sh ~/.myagent/hooks/lint.sh"}]}]
+}}
+```
+
+`matcher` 是正则，Claude Code 的工具名（`Bash`、`Edit`）和我们的（`bash`、`edit_file`）都认。stdin 收到
+`{"hook_event_name","tool_name","myagent_tool_name","tool_input","cwd"}`，`PostToolUse` 另有 `tool_response`、`tool_succeeded`。
+
+| 事件 | 退出码 2 | stdout 的 JSON |
+|---|---|---|
+| `PreToolUse` | 拦下，工具不跑，stderr 是给模型的理由 | `hookSpecificOutput.permissionDecision: "deny"` 拦下；`additionalContext` 接在结果后面 |
+| `PostToolUse` | 工具已经跑了拦不住，stderr 接在结果后面给模型 | `decision: "block"` 的 `reason`、`additionalContext` 接在结果后面 |
+
+别的退出码、超时一律不拦，只记警告。
+
 ### 界面
 
 - **标签页标题**：状态图标加上模型概括的会话摘要，比如 `💠 排查登录接口 500`。
@@ -675,7 +697,7 @@ src/main/java/dev/wiles/myagent/
   llm/        DeepSeek 客户端、流式累积、工具协议
   tool/       工具注册表 + 内置工具（读/写/列目录/跑命令/建项目）+ tool_search 延迟加载
   skill/      技能库、skill 工具、/技能名 的展开
-  hooks/      UserPromptSubmit hook
+  hooks/      UserPromptSubmit、PreToolUse / PostToolUse hook
     safety/   工作区/命令/写文件三道守卫 + 审批规则、策略落盘、diff
     search/   grep/glob 共用的遍历、.gitignore 解析、二进制探测
   plan/       单独派一步的执行体（收尾审查在用）：角色名册、AgentTaskRunner、Task、TaskPrompt
