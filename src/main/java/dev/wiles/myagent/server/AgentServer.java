@@ -147,6 +147,18 @@ public final class AgentServer extends WebSocketServer {
     /** 主会话的 auto 模式（照 Claude Code），见 {@link AutoMode}。 */
     private final AutoMode autoMode = new AutoMode(this::newMainReviewer);
 
+    /**
+     * 问人之前先过代码风险审查：只是用解释器跑代码的命令，低风险的不问人（见 {@link dev.wiles.myagent.tool.safety.CodeTriage}）。
+     * 没有 key（审查调不了模型）或者 MYAGENT_CODE_TRIAGE=off 时照常问人。
+     */
+    private dev.wiles.myagent.tool.safety.ApprovalPolicy codeTriaged(dev.wiles.myagent.tool.safety.ApprovalPolicy human) {
+        if (!config.hasApiKey() || !dev.wiles.myagent.tool.safety.CodeTriage.enabled()) {
+            return human;
+        }
+        return new dev.wiles.myagent.tool.safety.CodeTriageGate(human,
+                new dev.wiles.myagent.tool.safety.CodeTriage(this::autoReviewClient, workspace.root()));
+    }
+
     /** 自动审查用的模型：默认和会话同一个，MYAGENT_AUTO_MODEL 可换；不开思考、温度 0——要的是稳。 */
     private LlmClient autoReviewClient() {
         String model = System.getenv("MYAGENT_AUTO_MODEL");
@@ -282,7 +294,7 @@ public final class AgentServer extends WebSocketServer {
         // 会话级 hook 读一次，审批链（PermissionRequest / PermissionDenied）和 agent（Pre / PostToolUse）共用
         this.sessionHooks = dev.wiles.myagent.hooks.SessionHooks.load(workspace.root());
         this.policy = new PolicyGate(audit.audited(new dev.wiles.myagent.tool.safety.AutoReviewGate(
-                        sessionHooks.askHooksFirst(approval), true).onDenied(sessionHooks.retryOnDenied())),
+                        sessionHooks.askHooksFirst(codeTriaged(approval)), true).onDenied(sessionHooks.retryOnDenied())),
                 PolicyStore.inUserHome())
                 .classifyAllShell(dev.wiles.myagent.tool.safety.AutoModeSettings.inUserHome().classifyAllShell());
         this.memory = MemoryStore.inUserHome();

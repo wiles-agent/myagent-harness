@@ -670,8 +670,142 @@ public final class CommandGuard {
         if (SAFE_COMMANDS.contains(name)) {
             return CommandRisk.safe();
         }
+        // 解释器：要问不是因为不认识它，是因为它跑的代码命令文本里看不出来（见 CodeTriage）
+        CodeRun run = CodeRun.parse(segment);
+        if (run != null) {
+            return CommandRisk.approval(run.reason());
+        }
         // 白名单没列到的一律多问一句
         return CommandRisk.approval("未知命令 " + name + "，无法判断其影响");
+    }
+
+    /** 跑代码的解释器。名字带版本号的也算（python3.11）。 */
+    private static final Pattern CODE_RUNNER = Pattern.compile(
+            "python[0-9.]*|pypy[0-9.]*|node|nodejs|deno|bun|ruby|perl|php|rscript|lua|ts-node|tsx");
+
+    /** 这些参数后面跟的是内联代码。 */
+    private static final Set<String> INLINE_FLAGS = Set.of("-c", "-e", "-E", "--eval", "-p", "--print", "-r");
+
+    /** 这些参数后面跟一个值，不是脚本路径。 */
+    private static final Set<String> FLAGS_WITH_VALUE = Set.of("-W", "-X", "--require", "-I", "--import");
+
+    /**
+     * 一段命令里跑的代码。三者至多有一个：内联代码、脚本路径、模块名；都没有就是从 stdin 或交互式读。
+     *
+     * @param interpreter 解释器名（python3、node……）
+     */
+    public record CodeRun(String interpreter, String inlineCode, String script, String module) {
+
+        /** 守卫给的理由。{@link #codeRuns} 靠它认出「这一段要问，就是因为跑代码」。 */
+        String reason() {
+            String what = inlineCode != null ? "-c/-e 里的内联代码"
+                    : script != null ? "脚本 " + script
+                    : module != null ? "模块 " + module
+                    : "从标准输入读的代码";
+            return "要用 " + interpreter + " 运行代码（" + what + "），命令文本看不出这段代码会做什么";
+        }
+
+        /** 这一段是不是解释器在跑代码；不是返回 null。 */
+        static CodeRun parse(String segment) {
+            List<String> words = shellWords(unwrap(segment, true).inner());
+            if (words.isEmpty()) {
+                return null;
+            }
+            String first = words.get(0);
+            String name = first.substring(first.lastIndexOf('/') + 1).toLowerCase(Locale.ROOT);
+            if (!CODE_RUNNER.matcher(name).matches()) {
+                return null;
+            }
+            int i = 1;
+            if (("bun".equals(name) || "deno".equals(name)) && i < words.size() && "run".equals(words.get(i))) {
+                i++;
+            }
+            for (; i < words.size(); i++) {
+                String w = words.get(i);
+                if (INLINE_FLAGS.contains(w)) {
+                    return new CodeRun(name, i + 1 < words.size() ? words.get(i + 1) : "", null, null);
+                }
+                if ("-m".equals(w)) {
+                    return new CodeRun(name, null, null, i + 1 < words.size() ? words.get(i + 1) : "");
+                }
+                if (FLAGS_WITH_VALUE.contains(w)) {
+                    i++;
+                    continue;
+                }
+                if (w.startsWith("-") || w.matches("[<>].*|\\d*>.*")) {
+                    continue;
+                }
+                return new CodeRun(name, null, w, null);
+            }
+            return new CodeRun(name, null, null, null);
+        }
+    }
+
+    /**
+     * 整条命令里要审批的段是不是<b>全是</b>解释器在跑代码；是就返回每段跑的代码，不是返回 null。
+     * 只有这种命令归 {@link CodeTriage} 管——夹着 curl、rm、装包的，代码审查放不了，照常问人。
+     */
+    public static List<CodeRun> codeRuns(String command) {
+        if (command == null || command.isBlank() || command.length() > MAX_ANALYZED_LENGTH
+                || new QuoteAwareSplitter(command).split() == null) {
+            return null;
+        }
+        CommandGuard guard = new CommandGuard();
+        if (!guard.assess(command).needsApproval() || cdsAwayThenRunsGit(command)) {
+            return null;
+        }
+        List<CodeRun> runs = new java.util.ArrayList<>();
+        for (String segment : splitSegments(command)) {
+            if (segment.isBlank() || guard.segmentIsSafe(segment)) {
+                continue;
+            }
+            CodeRun run = CodeRun.parse(segment);
+            // 这一段要问的理由得正好是「跑代码」：指向家目录之类的另有理由，不归代码审查放
+            if (run == null || !run.reason().equals(guard.assessSegment(segment).reason())) {
+                return null;
+            }
+            runs.add(run);
+        }
+        return runs.isEmpty() ? null : runs;
+    }
+
+    /** 按 shell 的规矩拆词：认单双引号和反斜杠，不展开变量。 */
+    static List<String> shellWords(String text) {
+        List<String> out = new java.util.ArrayList<>();
+        StringBuilder cur = new StringBuilder();
+        boolean inWord = false;
+        char quote = 0;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (quote != 0) {
+                if (c == quote) {
+                    quote = 0;
+                } else if (c == '\\' && quote == '"' && i + 1 < text.length()) {
+                    cur.append(text.charAt(++i));
+                } else {
+                    cur.append(c);
+                }
+            } else if (c == '\'' || c == '"') {
+                quote = c;
+                inWord = true;
+            } else if (c == '\\' && i + 1 < text.length()) {
+                cur.append(text.charAt(++i));
+                inWord = true;
+            } else if (Character.isWhitespace(c)) {
+                if (inWord) {
+                    out.add(cur.toString());
+                    cur.setLength(0);
+                    inWord = false;
+                }
+            } else {
+                cur.append(c);
+                inWord = true;
+            }
+        }
+        if (inWord) {
+            out.add(cur.toString());
+        }
+        return out;
     }
 
     /** 判断参数（不含命令名本身）里是否出现了工作区之外的路径。 */
