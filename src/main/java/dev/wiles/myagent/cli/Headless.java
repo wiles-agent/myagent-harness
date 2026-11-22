@@ -157,8 +157,10 @@ public final class Headless {
         MemoryStore memory = MemoryStore.inUserHome();
         // 无头没人可问：下一层是「全都批」。auto / dontAsk 的子 agent 由 AutoReviewGate 先截住，
         // 审查交还给人时这里只能拒（交给「全都批」等于放行）
+        dev.wiles.myagent.hooks.SessionHooks sessionHooks = dev.wiles.myagent.hooks.SessionHooks.load(workspace.root());
         ApprovalPolicy headlessApproval = new dev.wiles.myagent.tool.safety.AutoReviewGate(
-                ApprovalPolicy.approveAll(), false);
+                sessionHooks.askHooksFirst(ApprovalPolicy.approveAll()), false)
+                .onDenied(sessionHooks.retryOnDenied());
         ToolRegistry tools = BuiltinTools.createDefault(workspace, headlessApproval, memory);
         // MCP 默认不接：评测靠这条路径跑，结果不能随本机 ~/.myagent/mcp.json 变。
         // MYAGENT_MCP=on 才接，拿来比「接了某个 MCP server 前后」——和 MYAGENT_SUBAGENTS 同一种对照开关。
@@ -271,7 +273,7 @@ public final class Headless {
                     SystemPrompt.forWorkspace(workspace.root(), index, false),
                     maxSteps, new ContextManager(config.contextTokens()))
                     .withWritingTools(BuiltinTools.WRITING_TOOLS)
-                    .withToolHooks(dev.wiles.myagent.hooks.SessionHooks.load(workspace.root()))
+                    .withToolHooks(sessionHooks)
                     .withStepBudget(budget);
             liveAgent.set(agent);
             if (budget != null) {

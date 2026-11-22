@@ -516,6 +516,15 @@ agent 不按关键词猜你的意图，但总有确定性的规则想加——�
 
 别的退出码、超时一律不拦，只记警告。
 
+审批相关的两个事件也认（照 Claude Code），同样写在 `settings.json` 的 `hooks` 里：
+
+- **`PermissionRequest`**：要**问人**之前先跑（规则、auto 审查、dontAsk 都已经判过了）。stdout 回
+  `{"hookSpecificOutput":{"decision":{"behavior":"allow"}}}` 就不问人直接放行，`"deny"`（可带 `message`）直接拒；
+  不表态就照常问人。退出码 2 不算数——要拒用 JSON。审批请求按工具的样子交给它：bash 是 `Bash` + `{"command"}`，
+  写文件是 `Write` + `{"file_path"}`，读是 `Read` + `{"file_path"}`，联网是 `network` + `{"host"}`。
+- **`PermissionDenied`**：auto 下审查拒了之后跑，stdin 多一个 `reason`。回 `{"hookSpecificOutput":{"retry":true}}`
+  就在拒绝理由后面告诉模型「这一下可以重试」。审查交还给人、却没人可问（无头）的那种拒绝照样通知，但不认 `retry`。
+
 ### 界面
 
 - **标签页标题**：状态图标加上模型概括的会话摘要，比如 `💠 排查登录接口 500`。
@@ -697,7 +706,7 @@ src/main/java/dev/wiles/myagent/
   llm/        DeepSeek 客户端、流式累积、工具协议
   tool/       工具注册表 + 内置工具（读/写/列目录/跑命令/建项目）+ tool_search 延迟加载
   skill/      技能库、skill 工具、/技能名 的展开
-  hooks/      UserPromptSubmit、PreToolUse / PostToolUse hook
+  hooks/      UserPromptSubmit、PreToolUse / PostToolUse、PermissionRequest / PermissionDenied hook
     safety/   工作区/命令/写文件三道守卫 + 审批规则、策略落盘、diff
     search/   grep/glob 共用的遍历、.gitignore 解析、二进制探测
   plan/       单独派一步的执行体（收尾审查在用）：角色名册、AgentTaskRunner、Task、TaskPrompt

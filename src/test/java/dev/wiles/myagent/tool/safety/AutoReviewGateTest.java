@@ -66,4 +66,29 @@ class AutoReviewGateTest {
         assertFalse(new AutoReviewGate(human, false).decide(RM).approved());
         assertTrue(asked.isEmpty());
     }
+
+    @Test
+    @DisplayName("PermissionDenied hook（照 Claude Code）：审查拒了之后通知它；它说 retry 就告诉模型可以重试；交还给人的那种不认 retry")
+    void permissionDeniedHook() {
+        List<String> told = new ArrayList<>();
+        AutoReviewGate gate = new AutoReviewGate(human, true).onDenied((request, reason) -> {
+            told.add(request.subject() + " | " + reason);
+            return true;
+        });
+        ApprovalScope.set(null, false, request -> ApprovalVerdict.no("越界"));
+        ApprovalVerdict v = gate.decide(RM);
+        assertFalse(v.approved());
+        assertTrue(v.deniedMessage("").contains("越界") && v.deniedMessage("").contains("重试"), v.deniedMessage(""));
+        assertEquals(List.of("rm -rf build | 越界"), told);
+
+        told.clear();
+        ApprovalScope.set(null, false, request -> null);
+        ApprovalVerdict headless = new AutoReviewGate(human, false).onDenied((request, reason) -> {
+            told.add(reason);
+            return true;
+        }).decide(RM);
+        assertFalse(headless.approved());
+        assertFalse(headless.deniedMessage("").contains("可以重试"), "没有审查结论的拒绝不认 retry（照 Claude Code）");
+        assertEquals(1, told.size(), "但照样通知");
+    }
 }

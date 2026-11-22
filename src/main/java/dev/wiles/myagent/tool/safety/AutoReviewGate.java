@@ -29,6 +29,25 @@ public final class AutoReviewGate implements ApprovalPolicy {
         this.escalateToNext = escalateToNext;
     }
 
+    /** auto 下被拒之后通知谁（照 Claude Code 的 PermissionDenied hook）；它回 true 表示「可以重试」。 */
+    private volatile java.util.function.BiPredicate<ApprovalRequest, String> onDenied = (request, reason) -> false;
+
+    public AutoReviewGate onDenied(java.util.function.BiPredicate<ApprovalRequest, String> hook) {
+        this.onDenied = hook == null ? (request, reason) -> false : hook;
+        return this;
+    }
+
+    /** 审查给了结论的拒绝：通知 hook，它说能重试就告诉模型。 */
+    private ApprovalVerdict denied(ApprovalRequest request, ApprovalVerdict verdict) {
+        boolean retry;
+        try {
+            retry = onDenied.test(request, verdict.note());
+        } catch (RuntimeException e) {
+            retry = false;
+        }
+        return retry ? ApprovalVerdict.no(verdict.note() + "（PermissionDenied hook 说这一下可以重试）") : verdict;
+    }
+
     @Override
     public ApprovalVerdict decide(ApprovalRequest request) {
         if (ApprovalScope.humanRequired()) {
@@ -46,11 +65,17 @@ public final class AutoReviewGate implements ApprovalPolicy {
         if (reviewer != null) {
             ApprovalVerdict verdict = reviewer.review(request);
             if (verdict != null) {
-                return verdict;
+                return verdict.approved() || verdict.cancelled() ? verdict : denied(request, verdict);
             }
             if (!escalateToNext) {
-                return ApprovalVerdict.no("自动审查已经连续拒绝多次、交还给人，但这里没有人可问（无头运行），"
+                ApprovalVerdict no = ApprovalVerdict.no("自动审查已经连续拒绝多次、交还给人，但这里没有人可问（无头运行），"
                         + "这类操作不再执行。在最后的答复里说明需要做什么、为什么，交给用户决定");
+                try {
+                    onDenied.test(request, no.note());   // 没有审查结论：照样通知，但不认 retry（照 Claude Code）
+                } catch (RuntimeException ignored) {
+                    // 通知失败不影响拒绝
+                }
+                return no;
             }
             return next.decide(request);
         }

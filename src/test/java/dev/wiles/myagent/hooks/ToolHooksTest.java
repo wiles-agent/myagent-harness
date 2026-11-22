@@ -134,4 +134,71 @@ class ToolHooksTest {
         assertTrue(SessionHooks.NONE.isEmpty());
         assertFalse(s.isEmpty());
     }
+
+    // ---------- PermissionRequest / PermissionDenied ----------
+
+    @Test
+    @DisplayName("PermissionRequest（照 Claude Code）：decision.behavior allow / deny 替人回答；退出码 2 不算数；没说就交给人")
+    void permissionRequestAnswers(@TempDir Path cwd) throws Exception {
+        ToolHooks allow = ToolHooks.parse(M.readTree("""
+                {"PermissionRequest": [{"matcher": "Bash", "hooks": [{"command": "cat > perm.json; echo '{\\"hookSpecificOutput\\":{\\"decision\\":{\\"behavior\\":\\"allow\\"}}}'"}]}]}"""),
+                cwd, ToolHooks.PERMISSION_REQUEST);
+        assertEquals(Boolean.TRUE, allow.permission("bash", "{\"command\":\"mvn test\"}").allow());
+        JsonNode seen = M.readTree(cwd.resolve("perm.json").toFile());
+        assertEquals("PermissionRequest", seen.path("hook_event_name").asText());
+        assertEquals("mvn test", seen.path("tool_input").path("command").asText());
+        assertNull(allow.permission("write_file", "{}").allow(), "没对上的不跑");
+
+        ToolHooks deny = ToolHooks.parse(M.readTree("""
+                {"PermissionRequest": [{"hooks": [{"command": "echo '{\\"hookSpecificOutput\\":{\\"decision\\":{\\"behavior\\":\\"deny\\",\\"message\\":\\"周五不发版\\"}}}'"}]}]}"""),
+                cwd, ToolHooks.PERMISSION_REQUEST);
+        ToolHooks.Answer no = deny.permission("bash", "{}");
+        assertEquals(Boolean.FALSE, no.allow());
+        assertEquals("周五不发版", no.message());
+
+        ToolHooks two = ToolHooks.parse(M.readTree("""
+                {"PermissionRequest": [{"hooks": [{"command": "exit 2"}]}]}"""), cwd, ToolHooks.PERMISSION_REQUEST);
+        assertNull(two.permission("bash", "{}").allow(), "PermissionRequest 不认退出码 2（照 Claude Code），交给人");
+    }
+
+    @Test
+    @DisplayName("PermissionDenied（照 Claude Code）：auto 审查拒了之后跑；hookSpecificOutput.retry=true 表示可以重试；退出码不算数")
+    void permissionDeniedRetry(@TempDir Path cwd) throws Exception {
+        ToolHooks retry = ToolHooks.parse(M.readTree("""
+                {"PermissionDenied": [{"hooks": [{"command": "cat > denied.json; echo '{\\"hookSpecificOutput\\":{\\"retry\\":true}}'"}]}]}"""),
+                cwd, ToolHooks.PERMISSION_DENIED);
+        assertTrue(retry.retry("bash", "{\"command\":\"curl x\"}", "外传数据"));
+        JsonNode seen = M.readTree(cwd.resolve("denied.json").toFile());
+        assertEquals("PermissionDenied", seen.path("hook_event_name").asText());
+        assertEquals("外传数据", seen.path("reason").asText());
+
+        ToolHooks quiet = ToolHooks.parse(M.readTree("""
+                {"PermissionDenied": [{"hooks": [{"command": "exit 2"}]}]}"""), cwd, ToolHooks.PERMISSION_DENIED);
+        assertFalse(quiet.retry("bash", "{}", "x"));
+    }
+
+    @Test
+    @DisplayName("审批请求换成 hook 认得的工具名和参数：bash→Bash{command}、写→Write{file_path}、读→Read{file_path}、联网→{host}")
+    void approvalRequestsLookLikeToolCalls(@TempDir Path cwd) throws Exception {
+        java.util.List<String> asked = new java.util.ArrayList<>();
+        dev.wiles.myagent.tool.safety.ApprovalPolicy human = r -> {
+            asked.add(r.subject());
+            return dev.wiles.myagent.tool.safety.ApprovalVerdict.yes();
+        };
+        ToolHooks perm = ToolHooks.parse(M.readTree("""
+                {"PermissionRequest": [{"matcher": "Write", "hooks": [{"command": "input=$(cat); case \\"$input\\" in *secrets*) echo '{\\"hookSpecificOutput\\":{\\"decision\\":{\\"behavior\\":\\"deny\\",\\"message\\":\\"不许写\\"}}}';; esac"}]}]}"""),
+                cwd, ToolHooks.PERMISSION_REQUEST);
+        SessionHooks s = new SessionHooks(ToolHooks.NONE, ToolHooks.NONE, perm, ToolHooks.NONE);
+        dev.wiles.myagent.tool.safety.ApprovalPolicy chain = s.askHooksFirst(human);
+
+        var v = chain.decide(dev.wiles.myagent.tool.safety.ApprovalRequest.write("写入文件", "secrets/a.txt", "覆盖", ""));
+        assertFalse(v.approved());
+        assertTrue(v.deniedMessage("").contains("不许写"), v.deniedMessage(""));
+        assertTrue(asked.isEmpty(), "hook 答了就不问人");
+
+        assertTrue(chain.decide(dev.wiles.myagent.tool.safety.ApprovalRequest.write("写入文件", "src/a.txt", "覆盖", "")).approved());
+        assertTrue(chain.decide(dev.wiles.myagent.tool.safety.ApprovalRequest.bash("ls secrets", "")).approved(),
+                "matcher 是 Write，bash 不跑这个 hook");
+        assertEquals(java.util.List.of("src/a.txt", "ls secrets"), asked, "hook 没说的照常问人");
+    }
 }

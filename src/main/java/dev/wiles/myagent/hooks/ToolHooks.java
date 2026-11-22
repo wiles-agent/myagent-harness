@@ -42,6 +42,15 @@ public final class ToolHooks {
     public static final String EVENT = "PreToolUse";
     /** 工具跑完之后（照 Claude Code）：拦不住了，反馈交给模型。 */
     public static final String POST = "PostToolUse";
+    /** 要问人之前（照 Claude Code）：hook 能替人回答 allow / deny。 */
+    public static final String PERMISSION_REQUEST = "PermissionRequest";
+    /** auto 审查拒了之后（照 Claude Code）：通知；hook 能说「可以重试」。 */
+    public static final String PERMISSION_DENIED = "PermissionDenied";
+
+    /** PermissionRequest 的回答：allow 为 null 表示 hook 没表态，照常问人。 */
+    public record Answer(Boolean allow, String message) {
+        static final Answer NONE = new Answer(null, "");
+    }
     private static final int DEFAULT_TIMEOUT_SECONDS = 60;
 
     /** 一组：matcher（null 表示全部）和它下面的命令。 */
@@ -226,6 +235,74 @@ public final class ToolHooks {
             }
         }
         return said.isEmpty() ? null : String.join("\n", said);
+    }
+
+    /**
+     * 要问人之前（{@link #PERMISSION_REQUEST}）：依次跑，第一个表态的说了算——
+     * {@code hookSpecificOutput.decision.behavior} 是 allow / deny，{@code decision.message} 是给模型的话。
+     * 退出码 2 不算数（照 Claude Code：要拒用 JSON），坏了的 hook 当没表态。
+     */
+    public Answer permission(String tool, String argumentsJson) {
+        if (groups.isEmpty()) {
+            return Answer.NONE;
+        }
+        byte[] stdin = input(tool, argumentsJson).toString().getBytes(StandardCharsets.UTF_8);
+        for (Group group : groups) {
+            if (!group.matches(tool)) {
+                continue;
+            }
+            for (PromptHooks.Command command : group.commands()) {
+                HookRunner.Result r = HookRunner.run(command.command(), command.timeoutSeconds(), cwd, stdin);
+                if (r.error() != null || r.exit() != 0) {
+                    log.warn("PermissionRequest hook「{}」{}", command.command(),
+                            r.error() != null ? r.error() : "退出码 " + r.exit() + "，当没表态");
+                    continue;
+                }
+                JsonNode decision = specific(r.stdout().strip()).path("decision");
+                String behavior = decision.path("behavior").asText("");
+                if ("allow".equals(behavior) || "deny".equals(behavior)) {
+                    return new Answer("allow".equals(behavior), decision.path("message").asText("").strip());
+                }
+            }
+        }
+        return Answer.NONE;
+    }
+
+    /**
+     * auto 审查拒了之后（{@link #PERMISSION_DENIED}）：通知所有对上的 hook，任何一个回
+     * {@code hookSpecificOutput.retry = true} 就算「可以重试」。退出码、stderr 不算数——拒已经发生了。
+     */
+    public boolean retry(String tool, String argumentsJson, String reason) {
+        if (groups.isEmpty()) {
+            return false;
+        }
+        ObjectNode input = input(tool, argumentsJson);
+        input.put("reason", reason == null ? "" : reason);
+        byte[] stdin = input.toString().getBytes(StandardCharsets.UTF_8);
+        boolean retry = false;
+        for (Group group : groups) {
+            if (!group.matches(tool)) {
+                continue;
+            }
+            for (PromptHooks.Command command : group.commands()) {
+                HookRunner.Result r = HookRunner.run(command.command(), command.timeoutSeconds(), cwd, stdin);
+                if (r.error() == null && specific(r.stdout().strip()).path("retry").asBoolean(false)) {
+                    retry = true;
+                }
+            }
+        }
+        return retry;
+    }
+
+    private static JsonNode specific(String stdout) {
+        if (!stdout.startsWith("{")) {
+            return JSON.createObjectNode();
+        }
+        try {
+            return JSON.readTree(stdout).path("hookSpecificOutput");
+        } catch (IOException e) {
+            return JSON.createObjectNode();
+        }
     }
 
     private static String additionalContext(String stdout) {

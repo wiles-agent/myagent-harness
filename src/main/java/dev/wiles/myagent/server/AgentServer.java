@@ -135,6 +135,7 @@ public final class AgentServer extends WebSocketServer {
     private final Agent agent;
     private final RemoteApproval approval;
     /** 审批的总入口。{@link #approval} 只是它问不出答案时才走的那一层。 */
+    private final dev.wiles.myagent.hooks.SessionHooks sessionHooks;
     private final PolicyGate policy;
 
     /**
@@ -278,7 +279,10 @@ public final class AgentServer extends WebSocketServer {
         // 顺序要紧：审计包在闸门里面，被规则直接放行的不产生审批记录——
         // 那条规则本身在存下来的那一刻已经记过一次了，再记一遍只会淹掉真正的决策
         // 规则 → 留底 → auto 下交给自动审查 / dontAsk 下拒 → 问人（见 AutoReviewGate）
-        this.policy = new PolicyGate(audit.audited(new dev.wiles.myagent.tool.safety.AutoReviewGate(approval, true)),
+        // 会话级 hook 读一次，审批链（PermissionRequest / PermissionDenied）和 agent（Pre / PostToolUse）共用
+        this.sessionHooks = dev.wiles.myagent.hooks.SessionHooks.load(workspace.root());
+        this.policy = new PolicyGate(audit.audited(new dev.wiles.myagent.tool.safety.AutoReviewGate(
+                        sessionHooks.askHooksFirst(approval), true).onDenied(sessionHooks.retryOnDenied())),
                 PolicyStore.inUserHome())
                 .classifyAllShell(dev.wiles.myagent.tool.safety.AutoModeSettings.inUserHome().classifyAllShell());
         this.memory = MemoryStore.inUserHome();
@@ -385,7 +389,7 @@ public final class AgentServer extends WebSocketServer {
                         .withPrecompute(new Precompute(contextManager(options.readOnly()),
                                 () -> newClient()))
                         .withWritingTools(BuiltinTools.WRITING_TOOLS)
-                        .withToolHooks(dev.wiles.myagent.hooks.SessionHooks.load(workspace.root()))
+                        .withToolHooks(sessionHooks)
                         .withToolGate(planMode::allows)
                         .onEvent(this::onAgentEvent)
                 : null;
