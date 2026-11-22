@@ -248,7 +248,7 @@ relay 要过一趟公网，同一屋檐下反而绕远。两种模式**同时可
 | `reset_done` | — | `/clear` 成功。**不删存档**，见 3.9 |
 | `session_list` | `sessions[]` `currentId` | 会话历史，只回给问的那个连接，见 3.9 |
 | `user_message` | `text` `mode` `cid` | **用户说了一句话**。广播给所有界面，见 3.15 |
-| `mode` | `mode`（`normal` / `plan`） | 会话模式变了，见 3.4 |
+| `mode` | `mode`（`normal` / `plan` / `auto`） | 会话模式变了，见 3.4、3.18 |
 | `hook` | `blocked` `message` | 用户提交 hook 拦下了这句话，或 hook 自己出了问题，见 3.5 |
 
 `ready` 的完整字段：
@@ -402,7 +402,7 @@ relay 要过一趟公网，同一屋檐下反而绕远。两种模式**同时可
 
 | 字段 | 说明 |
 |---|---|
-| `kind` | `bash` \| `write` \| `browse`。机器键，决定 `detail` 是命令、路径还是站点主机名，也决定 `preview` 怎么画 |
+| `kind` | `bash` \| `write` \| `read` \| `network` \| `browse`。机器键，决定 `detail` 是命令、路径还是站点主机名，也决定 `preview` 怎么画 |
 | `action` | 给人看的动作名。**会改措辞，别拿它当标识** |
 | `detail` | 命令原文、工作区相对路径，或站点主机名（`browse`） |
 | `reason` | 为什么要问。同时给用户和模型看 |
@@ -897,6 +897,11 @@ DAG 计划撤了之后，名册只剩这一个用处，界面靠它给带 `task`
 - **交还给人**：连拒 3 次或累计 20 次，之后要授权的操作照常发 `approval_request` 问人。
 - **子 agent**：主会话在 auto 下，派出前审一次任务（能拒）；子 agent 跟着进 auto；做完交回前复核，
   有问题时 `wait_agent` / 通知里的结果多一个 `review_warning`（只警告，结果照给）。
+- **被拦下的调用**：`tool_finished` 的 `ok` 是 false，`output` 里有一句以 **`自动审查拦下了这个动作：`** 开头的话，
+  冒号后面到行尾是理由。界面靠这句认「被拦」（标出来、攒成「最近被拦」），所以**这句开头是协议的一部分，改措辞要升协议**。
+  没有单独的事件：被拦的动作对模型来说就是一次失败的工具调用，界面多认一层而已。
+- 审批类型多了 `read`（`detail` 是路径）和 `network`（`detail` 是主机名，沙箱里的命令要联网时问）。照第 2 节通则，
+  新 `kind` 不升协议版本，界面照通用字段画。
 - feature 名不叫 `auto_mode`：那是早就撤掉的「按字面自动转规划」（见 3.8），老界面认它会去等 `mode_switched`。
 
 ---
