@@ -90,15 +90,13 @@ public final class WriteFileTool implements Tool {
         }
         // 写之前就得算：写完再比，比的是新内容和它自己，永远是空的
         String diff = diffAgainst(file, content);
-        if (risk.needsApproval()) {
-            // 带上 diff。只说「原 30 行 → 新 45 行」的话，用户能做的判断只有
-            // 「文件变长了」，而他要决定的是「这个改动对不对」
-            ApprovalVerdict verdict = dev.wiles.myagent.tool.safety.FileWriteGuard.decide(approval, pathArg, ApprovalRequest.write(
-                    "写入文件", pathArg, risk.reason(), diff));
-            if (!verdict.approved()) {
-                return ToolResult.error(verdict.deniedMessage("用户拒绝覆盖 " + pathArg + "。"
-                        + "请先确认该文件当前内容，或改写到别的路径。"));
-            }
+        // 带上 diff。只说「原 30 行 → 新 45 行」的话，用户能做的判断只有
+        // 「文件变长了」，而他要决定的是「这个改动对不对」。不用问的写也先过 deny / ask 规则
+        ApprovalVerdict verdict = FileWriteGuard.gate(approval, pathArg, risk.needsApproval(),
+                ApprovalRequest.write("写入文件", pathArg, reasonOr(risk, "写入文件 " + pathArg), diff));
+        if (!verdict.approved()) {
+            return ToolResult.error(verdict.deniedMessage("用户拒绝写入 " + pathArg + "。"
+                    + "请先确认该文件当前内容，或改写到别的路径。"));
         }
 
         try {
@@ -119,6 +117,10 @@ public final class WriteFileTool implements Tool {
         // 的绝大多数写入）从头到尾没有任何地方显示改了什么——屏幕上只有一句
         // 「已写入 45 行」。而 agent 改代码这件事，用户最该看见的恰恰是这个。
         return ToolResult.ok("已写入 " + pathArg + " (" + bytes + " 字节, " + lines + " 行)", diff);
+    }
+
+    private static String reasonOr(CommandRisk risk, String fallback) {
+        return risk.reason() == null || risk.reason().isBlank() ? fallback : risk.reason();
     }
 
     /**

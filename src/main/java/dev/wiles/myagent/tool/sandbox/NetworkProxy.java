@@ -19,6 +19,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -37,6 +38,14 @@ public final class NetworkProxy implements AutoCloseable {
     @FunctionalInterface
     public interface HostDecider {
         boolean allow(String host);
+
+        /**
+         * 用户的 NETWORK 规则先说话（照 Claude Code：deny 永远先看，ask 一定问人），连放行名单上的主机也管。
+         * deny → false；ask → 问过人的答案；没撞规则 → null，交给名单。
+         */
+        default Boolean ruled(String host) {
+            return null;
+        }
     }
 
     private final ServerSocketChannel server;
@@ -93,10 +102,28 @@ public final class NetworkProxy implements AutoCloseable {
         return false;
     }
 
-    /** 这个主机放不放：拒绝名单 → 放行名单 → strict 拒 → 问一次（记住答案）。 */
+    /** 规则的结论也按主机记住：ask 规则一条命令里只问一次。 */
+    private final Map<String, Optional<Boolean>> ruledHosts = new ConcurrentHashMap<>();
+
+    private Boolean rulesFor(String host) {
+        return ruledHosts.computeIfAbsent(host.toLowerCase(Locale.ROOT), h -> {
+            try {
+                return Optional.ofNullable(decider.ruled(h));
+            } catch (RuntimeException e) {
+                log.warn("对 {} 查规则时出错，按拒绝处理: {}", h, e.getMessage());
+                return Optional.of(false);
+            }
+        }).orElse(null);
+    }
+
+    /** 这个主机放不放：拒绝名单 → 用户的 deny / ask 规则 → 放行名单 → strict 拒 → 问一次（记住答案）。 */
     boolean allowed(String host) {
         if (settings.deniedDomains().stream().anyMatch(p -> matches(p, host))) {
             return false;
+        }
+        Boolean ruled = rulesFor(host);
+        if (ruled != null) {
+            return ruled;
         }
         if (settings.allowedDomains().stream().anyMatch(p -> matches(p, host))) {
             return true;

@@ -272,4 +272,81 @@ class FileWriteApprovalTest {
         assertFalse(r.ok(), r.content());
         assertEquals(1, asked.size());
     }
+
+    // ---- deny / ask 规则对每一次写都生效（照 Claude Code 的 Edit(path) 规则），不只是「本来就要问」的那些 ----
+
+    private PolicyGate gateWith(ApprovalRules rules, boolean humanAnswer) {
+        PolicyStore store = new PolicyStore(tmp.resolve("rules").resolve("policy.json"));
+        store.save(rules);
+        return new PolicyGate(recording(humanAnswer), store);
+    }
+
+    @Test
+    @DisplayName("WRITE 的 deny 规则连新建文件也拦——不然「不许写 secrets/」换个新文件名就绕过去了")
+    void denyRuleBlocksNewFile() throws Exception {
+        PolicyGate gate = gateWith(ApprovalRules.of(List.of(),
+                List.of(ApprovalRule.of(ApprovalKind.WRITE, "secrets/**", "d"))), true);
+
+        ToolResult r = write(writeTool(gate), "secrets/new.txt", "x");
+
+        assertFalse(r.ok(), r.content());
+        assertTrue(r.content().contains("secrets/**"), "要说清是哪条规则挡的: " + r.content());
+        assertFalse(Files.exists(tmp.resolve("secrets/new.txt")));
+        assertTrue(asked.isEmpty(), "deny 不问人: " + asked);
+    }
+
+    @Test
+    @DisplayName("WRITE 的 deny 规则对能回滚的覆盖也生效")
+    void denyRuleBlocksRewindableOverwrite() throws Exception {
+        Files.writeString(tmp.resolve("Main.java"), "old");
+        PolicyGate gate = gateWith(ApprovalRules.of(List.of(),
+                List.of(ApprovalRule.of(ApprovalKind.WRITE, "Main.java", "d"))), true);
+        WriteFileTool tool = new WriteFileTool(new Workspace(tmp), new FileWriteGuard(file -> true), gate);
+
+        assertFalse(write(tool, "Main.java", "new").ok());
+        assertEquals("old", Files.readString(tmp.resolve("Main.java")));
+    }
+
+    @Test
+    @DisplayName("WRITE 的 ask 规则：新建文件也一定问人")
+    void askRuleAsksForNewFile() throws Exception {
+        PolicyGate gate = gateWith(ApprovalRules.of(List.of(), List.of(),
+                List.of(ApprovalRule.of(ApprovalKind.WRITE, "migrations/**", "d"))), false);
+
+        ToolResult r = write(writeTool(gate), "migrations/V2__drop.sql", "drop table t;");
+
+        assertFalse(r.ok(), r.content());
+        assertEquals(1, asked.size(), "撞上 ask 规则要问: " + asked);
+        assertTrue(asked.get(0).startsWith("migrations/V2__drop.sql"), asked.toString());
+        assertFalse(Files.exists(tmp.resolve("migrations/V2__drop.sql")));
+    }
+
+    @Test
+    @DisplayName("没撞规则的新建文件照旧不问")
+    void unrelatedRulesKeepNewFilesQuiet() throws Exception {
+        PolicyGate gate = gateWith(ApprovalRules.of(List.of(),
+                List.of(ApprovalRule.of(ApprovalKind.WRITE, "secrets/**", "d")),
+                List.of(ApprovalRule.of(ApprovalKind.WRITE, "migrations/**", "d"))), false);
+
+        assertTrue(write(writeTool(gate), "src/A.java", "class A {}").ok());
+        assertTrue(asked.isEmpty(), asked.toString());
+    }
+
+    @Test
+    @DisplayName("edit_file 和 create_project 也一样吃 deny 规则")
+    void denyRuleCoversEditAndCreateProject() throws Exception {
+        Files.createDirectories(tmp.resolve("secrets"));
+        Files.writeString(tmp.resolve("secrets/a.txt"), "old");
+        PolicyGate gate = gateWith(ApprovalRules.of(List.of(),
+                List.of(ApprovalRule.of(ApprovalKind.WRITE, "secrets/**", "d"))), true);
+
+        var edit = new dev.wiles.myagent.tool.builtin.EditFileTool(new Workspace(tmp), new FileWriteGuard(file -> true), gate);
+        ToolResult e = edit.execute(M.readTree("{\"path\":\"secrets/a.txt\",\"old_string\":\"old\",\"new_string\":\"new\"}"));
+        assertFalse(e.ok(), e.content());
+        assertEquals("old", Files.readString(tmp.resolve("secrets/a.txt")));
+
+        CreateProjectTool create = new CreateProjectTool(new Workspace(tmp), new FileWriteGuard(), gate);
+        create.execute(M.readTree("{\"files\":[{\"path\":\"secrets/b.txt\",\"content\":\"x\"}]}"));
+        assertFalse(Files.exists(tmp.resolve("secrets/b.txt")));
+    }
 }

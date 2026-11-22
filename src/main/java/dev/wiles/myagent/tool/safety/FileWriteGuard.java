@@ -68,6 +68,25 @@ public final class FileWriteGuard {
         return protectedName(path) != null ? approval.decideIgnoringAllowRules(request) : approval.decide(request);
     }
 
+    /**
+     * 写文件的工具在 {@link #assess} 之后都走这儿。{@code needsApproval} 为 false（新建、能回滚）时也要先过规则：
+     * deny 规则照样拦、ask 规则照样问人（照 Claude Code：{@code Edit(path)} 的 deny / ask 对每一次写都生效）——
+     * 不然「不许写 secrets/」换个新文件名就绕过去了。
+     *
+     * @return 可以写就是批准；不批就是拒绝的那一份
+     */
+    public static ApprovalVerdict gate(ApprovalPolicy approval, String path, boolean needsApproval,
+                                       ApprovalRequest request) {
+        if (needsApproval) {
+            return decide(approval, path, request);
+        }
+        ApprovalVerdict denied = approval.denyOnly(request);
+        if (denied != null) {
+            return denied;
+        }
+        return approval.requiresHuman(request) ? approval.decide(request) : ApprovalVerdict.yes();
+    }
+
     /** 这个文件改坏了能不能回滚。默认一律不能，覆盖就问。 */
     private final Predicate<Path> rewindable;
 

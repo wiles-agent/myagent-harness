@@ -141,12 +141,10 @@ public final class EditFileTool implements Tool {
             return ToolResult.error(risk.reason());
         }
         String diff = diff(original, updated);
-        if (risk.needsApproval()) {
-            ApprovalVerdict verdict = dev.wiles.myagent.tool.safety.FileWriteGuard.decide(approval, pathArg, ApprovalRequest.write(
-                    "修改文件", pathArg, "将修改已有文件 " + pathArg + "（替换 " + count + " 处）", diff));
-            if (!verdict.approved()) {
-                return ToolResult.error(verdict.deniedMessage("用户拒绝修改 " + pathArg + "。"));
-            }
+        ApprovalVerdict verdict = FileWriteGuard.gate(approval, pathArg, risk.needsApproval(), ApprovalRequest.write(
+                "修改文件", pathArg, "将修改已有文件 " + pathArg + "（替换 " + count + " 处）", diff));
+        if (!verdict.approved()) {
+            return ToolResult.error(verdict.deniedMessage("用户拒绝修改 " + pathArg + "。"));
         }
 
         try {

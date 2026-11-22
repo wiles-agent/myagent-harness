@@ -163,4 +163,26 @@ class NetworkProxyTest {
         assertTrue(NetworkProxy.matches("pypi.org", "PYPI.org"));
         assertFalse(NetworkProxy.matches("pypi.org", "files.pypi.org"));
     }
+
+    @Test
+    @DisplayName("NETWORK 的 deny 规则压过放行名单（照 Claude Code：deny 永远先说话）")
+    void ruleDenyBeatsAllowedDomains() throws Exception {
+        NetworkProxy.HostDecider decider = new NetworkProxy.HostDecider() {
+            @Override
+            public boolean allow(String host) {
+                asked.add(host);
+                return true;
+            }
+
+            @Override
+            public Boolean ruled(String host) {
+                return Boolean.FALSE;
+            }
+        };
+        try (NetworkProxy p = NetworkProxy.unix(tmp.resolve("proxy.sock"), settings("127.0.0.1", null, false), decider)) {
+            assertTrue(send(p, connect(upstream.getLocalPort())).startsWith("HTTP/1.1 403"));
+            assertTrue(upstreamSaw.isEmpty());
+            assertTrue(asked.isEmpty());
+        }
+    }
 }

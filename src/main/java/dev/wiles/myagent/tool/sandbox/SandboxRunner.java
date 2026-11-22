@@ -78,8 +78,7 @@ public final class SandboxRunner {
     public <T> T run(List<String> argv, Path workspace, Exec<T> exec) throws IOException {
         Path scratch = scratch();
         Path net = Files.createTempDirectory("myagent-net-");
-        NetworkProxy.HostDecider decider = host -> approval.decide(
-                ApprovalRequest.network(host, "沙箱里的命令要连 " + host + "（不在放行的域名里）")).approved();
+        NetworkProxy.HostDecider decider = hostDecider(approval);
         NetworkProxy proxy = sandbox.wantsTcpProxy() ? NetworkProxy.tcp(settings, decider)
                 : NetworkProxy.unix(net.resolve("p.sock"), settings, decider);
         try (proxy) {
@@ -87,6 +86,26 @@ public final class SandboxRunner {
         } finally {
             deleteTree(net);                    // 代理的 socket 每条命令一个；/tmp 留着
         }
+    }
+
+    /** 代理问「这个主机能不能连」的那一头：名单外的走审批链；名单内的也先过 NETWORK 的 deny / ask 规则。 */
+    static NetworkProxy.HostDecider hostDecider(ApprovalPolicy approval) {
+        return new NetworkProxy.HostDecider() {
+            @Override
+            public boolean allow(String host) {
+                return approval.decide(
+                        ApprovalRequest.network(host, "沙箱里的命令要连 " + host + "（不在放行的域名里）")).approved();
+            }
+
+            @Override
+            public Boolean ruled(String host) {
+                ApprovalRequest request = ApprovalRequest.network(host, "沙箱里的命令要连 " + host + "（撞上了 ask 规则）");
+                if (approval.denyOnly(request) != null) {
+                    return false;
+                }
+                return approval.requiresHuman(request) ? approval.decide(request).approved() : null;
+            }
+        };
     }
 
     private static void deleteTree(Path dir) {

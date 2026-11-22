@@ -148,18 +148,19 @@ public final class CreateProjectTool implements Tool {
                 }
                 // 批量创建时逐个弹框会烦死人，所以只对真正要覆盖的那些问，
                 // 且把每个文件的变化幅度写进提示里
-                if (risk.needsApproval()) {
-                    ApprovalVerdict verdict = dev.wiles.myagent.tool.safety.FileWriteGuard.decide(approval, pathArg, ApprovalRequest.write(
-                            "覆盖文件", pathArg, risk.reason(), diffAgainst(target, content)));
-                    if (verdict.cancelled()) {
-                        stopped = true;
-                        untouched.add(pathArg);
-                        continue;
-                    }
-                    if (!verdict.approved()) {
-                        failed.add(pathArg + " (" + verdict.deniedMessage("用户拒绝覆盖") + ")");
-                        continue;
-                    }
+                // 不用问的（新建）也先过 deny / ask 规则
+                ApprovalVerdict verdict = FileWriteGuard.gate(approval, pathArg, risk.needsApproval(),
+                        ApprovalRequest.write(risk.needsApproval() ? "覆盖文件" : "新建文件", pathArg,
+                                risk.needsApproval() ? risk.reason() : "新建文件 " + pathArg,
+                                diffAgainst(target, content)));
+                if (verdict.cancelled()) {
+                    stopped = true;
+                    untouched.add(pathArg);
+                    continue;
+                }
+                if (!verdict.approved()) {
+                    failed.add(pathArg + " (" + verdict.deniedMessage("用户拒绝写入") + ")");
+                    continue;
                 }
                 try {
                     Path parent = target.getParent();
